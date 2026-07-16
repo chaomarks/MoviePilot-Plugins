@@ -481,7 +481,7 @@ class ClSearch(_PluginBase):
 
     def get_page(self) -> List[dict]:
         """返回插件详情页"""
-        pass
+        return []
 
     # ==================== PoW 验证 ====================
 
