@@ -1,13 +1,14 @@
 {
-  "CmsSearch": {
+  "ClSearch": {
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.2.1",
-    "icon": "cmssearch.png",
+    "version": "1.2.2",
+    "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
+      "v1.2.2": "去除搜索页面开关，点击插件直接跳转配置界面",
       "v1.2.1": "更名为观影磁力搜，上传至GitHub仓库",
       "v1.2.0": "新增账号密码自动登录支持，登录信息自动同步，无需手动复制Cookie",
       "v1.1.0": "更名为影视磁力搜，支持Cookie认证，优化搜索和详情解析",

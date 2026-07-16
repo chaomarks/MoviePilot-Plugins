@@ -1,5 +1,5 @@
 """
-影视磁力搜插件
+观影磁力搜插件
 
 搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。
 支持Cookie认证和账号密码自动登录，自动解析搜索结果和磁力链接。
@@ -20,8 +20,8 @@ from app.plugins import _PluginBase
 from app.schemas import NotificationType
 
 
-class CmsSearch(_PluginBase):
-    """影视磁力搜插件"""
+class ClSearch(_PluginBase):
+    """观影磁力搜插件"""
 
     # 插件名称
     plugin_name = "观影磁力搜"
@@ -30,13 +30,13 @@ class CmsSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     # 插件作者
     plugin_author = "local"
     # 作者主页
     author_url = "https://github.com/jxxghp/MoviePilot"
     # 插件配置项ID前缀
-    plugin_config_prefix = "magsearch_"
+    plugin_config_prefix = "clsearch_"
     # 加载顺序
     plugin_order = 50
     # 可使用的用户级别
@@ -44,7 +44,6 @@ class CmsSearch(_PluginBase):
 
     # 插件属性
     _enabled = False
-    _show_search_page = True
     _site_url = ""
     _site_auth_mode = "cookie"  # "cookie" 或 "account"
     _site_cookie = ""
@@ -65,7 +64,6 @@ class CmsSearch(_PluginBase):
         """初始化插件"""
         self.stop_service()
         self._enabled = False
-        self._show_search_page = True
         self._site_url = ""
         self._site_auth_mode = "cookie"
         self._site_cookie = ""
@@ -81,7 +79,6 @@ class CmsSearch(_PluginBase):
             return
 
         self._enabled = bool(config.get("enabled"))
-        self._show_search_page = bool(config.get("show_search_page", True))
         self._site_url = str(config.get("site_url") or "").rstrip("/")
         self._site_auth_mode = str(config.get("site_auth_mode") or "cookie")
         self._site_cookie = str(config.get("site_cookie") or "")
@@ -101,8 +98,8 @@ class CmsSearch(_PluginBase):
         """返回插件远程命令列表"""
         return [
             {
-                "cmd": "/magsearch",
-                "event": "magsearch",
+                "cmd": "/clsearch",
+                "event": "clsearch",
                 "desc": "观影搜",
                 "category": "观影搜",
                 "data": {
@@ -164,19 +161,6 @@ class CmsSearch(_PluginBase):
                                         "props": {
                                             "model": "enabled",
                                             "label": "启用插件",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "show_search_page",
-                                            "label": "显示搜索页面",
                                         },
                                     }
                                 ],
@@ -468,7 +452,6 @@ class CmsSearch(_PluginBase):
             }
         ], {
             "enabled": False,
-            "show_search_page": True,
             "site_url": "",
             "site_auth_mode": "account",
             "site_cookie": "",
@@ -479,341 +462,6 @@ class CmsSearch(_PluginBase):
             "save_path": "",
             "use_mp_rename": False,
             "_tabs": "site_tab",
-        }
-
-    def get_page(self) -> dict:
-        """返回插件主页面 - 搜索界面"""
-        return {
-            "component": [
-                {
-                    "component": "div",
-                    "props": {"class": "px-2 pt-2"},
-                    "content": [
-                        # ========== 搜索栏 ==========
-                        {
-                            "component": "VRow",
-                            "props": {"align": "center", "no-gutters": True},
-                            "content": [
-                                {
-                                    "component": "VCol",
-                                    "props": {"cols": 12, "sm": 8, "md": 9},
-                                    "content": [
-                                        {
-                                            "component": "VTextField",
-                                            "props": {
-                                                "model": "keyword",
-                                                "label": "搜索关键词",
-                                                "placeholder": "输入影视名称搜索磁力资源",
-                                                "density": "compact",
-                                                "variant": "outlined",
-                                                "hide-details": True,
-                                                "clearable": True,
-                                                "onkeyup.enter": "searchResource",
-                                            },
-                                        }
-                                    ],
-                                },
-                                {
-                                    "component": "VCol",
-                                    "props": {"cols": 12, "sm": 4, "md": 3, "class": "pl-2"},
-                                    "content": [
-                                        {
-                                            "component": "VBtn",
-                                            "props": {
-                                                "color": "primary",
-                                                "block": True,
-                                                "loading": "searching",
-                                                "onClick": "searchResource",
-                                            },
-                                            "text": "搜索",
-                                        }
-                                    ],
-                                },
-                            ],
-                        },
-                        # ========== 搜索状态 ==========
-                        {
-                            "component": "VAlert",
-                            "props": {
-                                "type": "info",
-                                "variant": "tonal",
-                                "density": "compact",
-                                "class": "mt-3",
-                                "v-if": "status_msg",
-                            },
-                            "text": "{{ status_msg }}",
-                        },
-                        # ========== 搜索结果表格 ==========
-                        {
-                            "component": "VDataTable",
-                            "props": {
-                                "v-if": "results.length > 0",
-                                "headers": "tableHeaders",
-                                "items": "results",
-                                "item-value": "id",
-                                "density": "compact",
-                                "hover": True,
-                                "class": "mt-3",
-                            },
-                            "content": [
-                                {
-                                    "component": "template",
-                                    "props": {"v-slot:item": "props"},
-                                    "content": [
-                                        {
-                                            "component": "tr",
-                                            "props": {
-                                                "style": "cursor:pointer",
-                                                "onClick": "showDetail(props.item)",
-                                            },
-                                            "content": [
-                                                {
-                                                    "component": "td",
-                                                    "content": [
-                                                        {
-                                                            "component": "div",
-                                                            "props": {
-                                                                "class": "text-truncate",
-                                                                "style": "max-width:400px",
-                                                            },
-                                                            "text": "props.item.title",
-                                                        }
-                                                    ],
-                                                },
-                                                {"component": "td", "text": "props.item.size"},
-                                                {"component": "td", "text": "props.item.seeders"},
-                                                {"component": "td", "text": "props.item.update_time"},
-                                            ],
-                                        }
-                                    ],
-                                }
-                            ],
-                        },
-                        # ========== 详情对话框 ==========
-                        {
-                            "component": "VDialog",
-                            "props": {
-                                "model": "detail_dialog",
-                                "max-width": "700",
-                            },
-                            "content": [
-                                {
-                                    "component": "VCard",
-                                    "content": [
-                                        {
-                                            "component": "VCardTitle",
-                                            "props": {"class": "text-subtitle-1 font-weight-bold d-flex align-center"},
-                                            "content": [
-                                                {
-                                                    "component": "span",
-                                                    "props": {"class": "text-truncate"},
-                                                    "text": "detail_data.title || '资源详情'",
-                                                },
-                                                {"component": "VSpacer"},
-                                                {
-                                                    "component": "VBtn",
-                                                    "props": {
-                                                        "icon": True,
-                                                        "size": "small",
-                                                        "onClick": "detail_dialog = false",
-                                                    },
-                                                    "content": [
-                                                        {"component": "VIcon", "text": "mdi-close"}
-                                                    ],
-                                                },
-                                            ],
-                                        },
-                                        {"component": "VDivider"},
-                                        {
-                                            "component": "VCardText",
-                                            "content": [
-                                                {
-                                                    "component": "div",
-                                                    "props": {"v-if": "detail_data.magnet", "class": "mb-3"},
-                                                    "content": [
-                                                        {"component": "div", "props": {"class": "text-caption text-grey mb-1"}, "text": "磁力链接"},
-                                                        {
-                                                            "component": "div",
-                                                            "props": {
-                                                                "class": "text-body-2 pa-2",
-                                                                "style": "background:#f5f5f5;border-radius:4px;word-break:break-all;max-height:80px;overflow-y:auto",
-                                                            },
-                                                            "text": "detail_data.magnet",
-                                                        },
-                                                    ],
-                                                },
-                                                {
-                                                    "component": "div",
-                                                    "props": {"v-if": "detail_data.torrent_url", "class": "mb-3"},
-                                                    "content": [
-                                                        {"component": "div", "props": {"class": "text-caption text-grey mb-1"}, "text": "种子下载"},
-                                                        {
-                                                            "component": "VBtn",
-                                                            "props": {
-                                                                "size": "small", "variant": "outlined", "color": "primary",
-                                                                "href": "detail_data.torrent_url", "target": "_blank",
-                                                            },
-                                                            "text": "下载种子文件",
-                                                        },
-                                                    ],
-                                                },
-                                                {
-                                                    "component": "div",
-                                                    "props": {"v-if": "detail_data.files && detail_data.files.length > 0"},
-                                                    "content": [
-                                                        {"component": "div", "props": {"class": "text-caption text-grey mb-1"}, "text": "文件列表"},
-                                                        {
-                                                            "component": "VList",
-                                                            "props": {"density": "compact", "lines": "one"},
-                                                            "content": [
-                                                                {
-                                                                    "component": "VListItem",
-                                                                    "props": {"v-for": "(file, idx) in detail_data.files", ":key": "idx"},
-                                                                    "content": [
-                                                                        {"component": "VListItemTitle", "props": {"class": "text-body-2"}, "text": "file"}
-                                                                    ],
-                                                                }
-                                                            ],
-                                                        },
-                                                    ],
-                                                },
-                                            ],
-                                        },
-                                        {
-                                            "component": "VCardActions",
-                                            "props": {"class": "pa-4"},
-                                            "content": [
-                                                {
-                                                    "component": "VBtn",
-                                                    "props": {"variant": "outlined", "onClick": "copyMagnet", "v-if": "detail_data.magnet"},
-                                                    "text": "复制磁力链接",
-                                                },
-                                                {"component": "VSpacer"},
-                                                {
-                                                    "component": "VBtn",
-                                                    "props": {"color": "success", "loading": "offline_loading", "onClick": "addOffline", "v-if": "detail_data.magnet"},
-                                                    "text": "115离线下载",
-                                                },
-                                            ],
-                                        },
-                                    ],
-                                }
-                            ],
-                        },
-                    ],
-                }
-            ],
-            "script": """
-const { ref, reactive, onMounted, watch, nextTick } = Vue;
-
-// 响应式状态
-const keyword = ref('');
-const searching = ref(false);
-const status_msg = ref('');
-const results = ref([]);
-const detail_dialog = ref(false);
-const detail_data = reactive({ title: '', magnet: '', torrent_url: '', files: [], offline_url: '' });
-const offline_loading = ref(false);
-
-// 表格列定义
-const tableHeaders = [
-    { title: '标题', key: 'title', sortable: false },
-    { title: '大小', key: 'size', sortable: false, width: '100px' },
-    { title: '做种', key: 'seeders', sortable: false, width: '80px' },
-    { title: '更新时间', key: 'update_time', sortable: false, width: '140px' },
-];
-
-// 获取API基础路径
-function getApiBase() {
-    return '/api/v1/plugin/CmsSearch';
-}
-
-// 搜索资源
-async function searchResource() {
-    const kw = keyword.value?.trim();
-    if (!kw) {
-        status_msg.value = '请输入搜索关键词';
-        return;
-    }
-    searching.value = true;
-    status_msg.value = '正在搜索...';
-    results.value = [];
-    try {
-        const resp = await fetch(`${getApiBase}/search?keyword=${encodeURIComponent(kw)}`);
-        const data = await resp.json();
-        if (data.success) {
-            results.value = data.data || [];
-            status_msg.value = data.message || `找到 ${results.value.length} 个结果`;
-        } else {
-            status_msg.value = data.message || '搜索失败';
-        }
-    } catch (e) {
-        status_msg.value = '搜索请求异常: ' + e.message;
-    } finally {
-        searching.value = false;
-    }
-}
-
-// 显示详情
-async function showDetail(item) {
-    detail_data.title = item.title;
-    detail_data.magnet = '';
-    detail_data.torrent_url = '';
-    detail_data.files = [];
-    detail_data.offline_url = '';
-    detail_dialog.value = true;
-
-    try {
-        const resp = await fetch(`${getApiBase}/detail?detail_path=${encodeURIComponent(item.detail_path)}`);
-        const data = await resp.json();
-        if (data.success && data.data) {
-            Object.assign(detail_data, data.data);
-        }
-    } catch (e) {
-        console.error('获取详情失败', e);
-    }
-}
-
-// 复制磁力链接
-function copyMagnet() {
-    if (detail_data.magnet) {
-        navigator.clipboard.writeText(detail_data.magnet).then(() => {
-            status_msg.value = '磁力链接已复制到剪贴板';
-        }).catch(() => {
-            // fallback
-            const ta = document.createElement('textarea');
-            ta.value = detail_data.magnet;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-            status_msg.value = '磁力链接已复制到剪贴板';
-        });
-    }
-}
-
-// 115离线下载
-async function addOffline() {
-    if (!detail_data.magnet) return;
-    offline_loading.value = true;
-    try {
-        const resp = await fetch(`${getApiBase}/offline`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                magnet: detail_data.magnet,
-                title: detail_data.title,
-            }),
-        });
-        const data = await resp.json();
-        status_msg.value = data.message || (data.success ? '已添加到离线下载' : '添加失败');
-    } catch (e) {
-        status_msg.value = '离线下载请求异常: ' + e.message;
-    } finally {
-        offline_loading.value = false;
-    }
-}
-""",
         }
 
     # ==================== 登录相关方法 ====================
@@ -1274,7 +922,7 @@ async function addOffline() {
 
     def handle_event(self, event: Event) -> None:
         """处理事件"""
-        if event.event_type == "magsearch":
+        if event.event_type == "clsearch":
             data = event.event_data or {}
             action = data.get("action")
 
