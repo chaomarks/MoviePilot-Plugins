@@ -9,6 +9,7 @@ import re
 import json
 import hashlib
 import threading
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type
 from urllib.parse import urljoin, quote
 
@@ -33,7 +34,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.2.6"
+    plugin_version = "1.2.7"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -56,6 +57,10 @@ class ClSearch(_PluginBase):
     _save_path = ""
     _use_mp_rename = False
     _resolved_path = ""  # CID 解析出的完整路径
+
+    # 搜索 & 离线历史记录
+    _search_history: List[Dict[str, Any]] = []
+    _offline_history: List[Dict[str, Any]] = []
 
     # 搜索结果缓存
     _search_cache: Dict[str, Any] = {}
@@ -345,21 +350,42 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
-                    # 离线下载目录CID + 解析路径 + 保存路径
+                    # 离线下载目录
                     {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "density": "compact",
+                                            "class": "mb-2",
+                                        },
+                                        "text": "填入115网盘目标目录的CID，保存后自动解析为完整路径显示在右侧。",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "save_dir_id",
                                             "label": "目录CID",
-                                            "placeholder": "例如：123456789",
-                                            "hint": "115网盘目录的CID，保存配置后自动解析为完整路径",
+                                            "placeholder": "例如：2835669123456789",
+                                            "hint": "从115网盘网页地址栏获取，格式为19位数字",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -367,7 +393,7 @@ class ClSearch(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -375,23 +401,29 @@ class ClSearch(_PluginBase):
                                             "model": "resolved_path",
                                             "label": "解析路径",
                                             "readonly": True,
-                                            "hint": "CID自动解析出的完整路径（如 /影视/电视剧）",
+                                            "hint": "CID自动解析出的完整路径（如 /影视/电视剧），保存后自动填充",
                                             "persistent-hint": True,
                                         },
                                     }
                                 ],
                             },
+                        ],
+                    },
+                    # 保存子路径
+                    {
+                        "component": "VRow",
+                        "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "save_path",
                                             "label": "保存子路径（可选）",
-                                            "placeholder": "例如：/国产剧",
-                                            "hint": "在解析路径下的子目录，留空则保存到目录根",
+                                            "placeholder": "例如：国产剧",
+                                            "hint": "在解析路径下的子目录，留空则保存到目录根。注意：需要先创建好目录",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -414,8 +446,138 @@ class ClSearch(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        """返回插件详情页"""
-        return []
+        """返回插件详情页，展示搜索和离线历史记录"""
+        search_items = self._search_history[:20]
+        offline_items = self._offline_history[:20]
+
+        return [
+            {
+                "component": "div",
+                "props": {"class": "pa-2"},
+                "content": [
+                    # 标题
+                    {
+                        "component": "div",
+                        "props": {"class": "text-h6 font-weight-bold mb-2"},
+                        "text": "观影磁力搜",
+                    },
+                    # 统计卡片
+                    {
+                        "component": "VRow",
+                        "props": {"class": "mb-4"},
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 6, "md": 6},
+                                "content": [{
+                                    "component": "VCard",
+                                    "props": {"variant": "tonal", "color": "primary"},
+                                    "content": [{
+                                        "component": "VCardText",
+                                        "props": {"class": "pa-3 text-center"},
+                                        "content": [
+                                            {"component": "div", "props": {"class": "text-h5 font-weight-bold"}, "text": str(len(search_items))},
+                                            {"component": "div", "props": {"class": "text-caption"}, "text": "搜索记录"},
+                                        ],
+                                    }],
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 6, "md": 6},
+                                "content": [{
+                                    "component": "VCard",
+                                    "props": {"variant": "tonal", "color": "success"},
+                                    "content": [{
+                                        "component": "VCardText",
+                                        "props": {"class": "pa-3 text-center"},
+                                        "content": [
+                                            {"component": "div", "props": {"class": "text-h5 font-weight-bold"}, "text": str(sum(1 for r in offline_items if r.get("success")))},
+                                            {"component": "div", "props": {"class": "text-caption"}, "text": "成功离线"},
+                                        ],
+                                    }],
+                                }],
+                            },
+                        ],
+                    },
+                    # 搜索历史
+                    {
+                        "component": "VCard",
+                        "props": {"variant": "tonal", "class": "mb-4"},
+                        "content": [
+                            {
+                                "component": "VCardTitle",
+                                "props": {"class": "text-subtitle-1"},
+                                "text": f"搜索历史（{len(search_items)}条）",
+                            },
+                            {
+                                "component": "VCardText",
+                                "props": {"class": "pa-0"},
+                                "content": [{
+                                    "component": "VDataTable",
+                                    "props": {
+                                        "headers": [
+                                            {"title": "关键词", "key": "keyword"},
+                                            {"title": "结果数", "key": "count", "align": "center"},
+                                            {"title": "时间", "key": "time", "align": "end"},
+                                        ],
+                                        "items": search_items,
+                                        "items-per-page": 10,
+                                        "hover": True,
+                                        "density": "compact",
+                                        "hide-default-footer": len(search_items) <= 10,
+                                    },
+                                }] if search_items else [{
+                                    "component": "VCardText",
+                                    "text": "暂无搜索记录，使用 /clsearch 关键词 开始搜索",
+                                }],
+                            },
+                        ],
+                    },
+                    # 离线下载历史
+                    {
+                        "component": "VCard",
+                        "props": {"variant": "tonal"},
+                        "content": [
+                            {
+                                "component": "VCardTitle",
+                                "props": {"class": "text-subtitle-1"},
+                                "text": f"离线下载历史（{len(offline_items)}条）",
+                            },
+                            {
+                                "component": "VCardText",
+                                "props": {"class": "pa-0"},
+                                "content": [{
+                                    "component": "VDataTable",
+                                    "props": {
+                                        "headers": [
+                                            {"title": "标题", "key": "title"},
+                                            {"title": "状态", "key": "status", "align": "center"},
+                                            {"title": "时间", "key": "time", "align": "end"},
+                                        ],
+                                        "items": [
+                                            {
+                                                "title": r["title"],
+                                                "status": "✅ 成功" if r.get("success") else f"❌ {r.get('error', '失败')}",
+                                                "time": r["time"],
+                                            }
+                                            for r in offline_items
+                                        ],
+                                        "items-per-page": 10,
+                                        "hover": True,
+                                        "density": "compact",
+                                        "hide-default-footer": len(offline_items) <= 10,
+                                    },
+                                }] if offline_items else [{
+                                    "component": "VCardText",
+                                    "text": "暂无离线下载记录",
+                                }],
+                            },
+                        ],
+                    },
+                ],
+            }
+        ]
 
     # ==================== PoW 验证 ====================
 
@@ -850,6 +1012,8 @@ class ClSearch(_PluginBase):
             if not results:
                 return {"success": True, "message": "未找到相关资源", "data": []}
 
+            self._record_search_history(keyword, len(results))
+
             return {
                 "success": True,
                 "message": f"找到 {len(results)} 个结果",
@@ -1068,6 +1232,7 @@ class ClSearch(_PluginBase):
 
             if result and result.get("state"):
                 logger.info(f"115离线下载添加成功: {title}")
+                self._record_offline_history(title, True)
                 return {
                     "success": True,
                     "message": f"已添加到115离线下载: {title}",
@@ -1076,6 +1241,7 @@ class ClSearch(_PluginBase):
             else:
                 error_msg = result.get("error") or result.get("message") or "未知错误"
                 logger.error(f"115离线下载添加失败: {error_msg}")
+                self._record_offline_history(title, False, error_msg)
                 return {
                     "success": False,
                     "message": f"添加失败: {error_msg}",
@@ -1121,6 +1287,27 @@ class ClSearch(_PluginBase):
                 content=result.get("message", "搜索失败"),
                 notification_type=NotificationType.Warning,
             )
+
+    # ==================== 历史记录 ====================
+
+    def _record_search_history(self, keyword: str, count: int) -> None:
+        """记录搜索历史"""
+        self._search_history.insert(0, {
+            "keyword": keyword,
+            "count": count,
+            "time": datetime.now().strftime("%m-%d %H:%M"),
+        })
+        self._search_history = self._search_history[:20]
+
+    def _record_offline_history(self, title: str, success: bool, error: str = "") -> None:
+        """记录离线下载历史"""
+        self._offline_history.insert(0, {
+            "title": title,
+            "success": success,
+            "error": error,
+            "time": datetime.now().strftime("%m-%d %H:%M"),
+        })
+        self._offline_history = self._offline_history[:20]
 
     def _send_search_results(self, keyword: str, results: List[dict]) -> None:
         """发送搜索结果通知"""
