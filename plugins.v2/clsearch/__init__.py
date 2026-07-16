@@ -632,25 +632,32 @@ class ClSearch(_PluginBase):
                 return False, f"登录异常: {str(e)}"
 
     def _ensure_authenticated(self) -> bool:
-        """确保站点已认证（Cookie有效）
+        """确保站点已认证
 
-        账号密码模式下，如果没有有效的Session则自动登录。
-        Cookie模式下，检查Cookie是否已配置。
+        优先使用已有Cookie，Cookie失效则自动用账号密码登录并更新Cookie。
 
         Returns:
             True表示已认证，False表示认证失败
         """
-        if self._site_auth_mode == "account":
-            # 账号密码模式：如果Session不存在，尝试登录
-            if not self._session:
-                success, msg = self._site_login()
-                if not success:
-                    logger.error(f"自动登录失败: {msg}")
-                    return False
+        # 1. 如果已有Session（账号密码登录成功过），直接使用
+        if self._session:
             return True
-        else:
-            # Cookie模式：检查Cookie是否已配置
-            return bool(self._site_cookie)
+
+        # 2. 如果有Cookie，尝试使用Cookie模式
+        if self._site_cookie:
+            return True
+
+        # 3. 如果有账号密码，自动登录获取Cookie
+        if self._site_username and self._site_password:
+            success, msg = self._site_login()
+            if success:
+                logger.info("自动登录成功，Cookie已更新")
+                return True
+            else:
+                logger.error(f"自动登录失败: {msg}")
+                return False
+
+        return False
 
     def _get_headers(self) -> dict:
         """构建带Cookie的请求头"""
@@ -662,19 +669,10 @@ class ClSearch(_PluginBase):
         return headers
 
     def _do_request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """发起HTTP请求，自动处理 PoW 和认证
-
-        Args:
-            method: HTTP方法 (GET, POST等)
-            url: 请求URL
-            **kwargs: 传递给requests的其他参数
-
-        Returns:
-            requests.Response对象
-        """
+        """发起HTTP请求（简单版，不处理PoW）"""
         kwargs.setdefault("timeout", 30)
 
-        if self._site_auth_mode == "account" and self._session:
+        if self._session:
             return self._session.request(method, url, **kwargs)
         else:
             headers = kwargs.pop("headers", {})
@@ -686,7 +684,13 @@ class ClSearch(_PluginBase):
     def _request_with_pow(self, method: str, url: str, **kwargs) -> requests.Response:
         """发起请求，自动处理 PoW 拦截
 
-        如果响应被 PoW 拦截，自动解决 PoW 后重试。
+        流程：
+        1. 优先使用Session（账号登录后的会话）
+        2. 否则使用Cookie Header
+        3. 被PoW拦截时：
+           - 有Session → 在Session上解决PoW，重试
+           - 有账号密码 → 完整登录（PoW+登录），自动填入Cookie，重试
+           - 仅有Cookie → 解决PoW，合并browser_verified到Cookie，重试
 
         Args:
             method: HTTP方法
@@ -699,7 +703,7 @@ class ClSearch(_PluginBase):
         kwargs.setdefault("timeout", 30)
         kwargs.setdefault("allow_redirects", True)
 
-        if self._site_auth_mode == "account" and self._session:
+        if self._session:
             resp = self._session.request(method, url, **kwargs)
         else:
             headers = kwargs.pop("headers", {})
@@ -711,27 +715,40 @@ class ClSearch(_PluginBase):
         # 检查是否被 PoW 拦截
         if "powSolve" in resp.text or "安全验证" in resp.text:
             logger.info("请求被PoW拦截，尝试解决...")
-            if self._site_auth_mode == "account" and self._session:
+
+            # 情况1：有Session → 在Session上解决PoW
+            if self._session:
                 if self._solve_pow(self._session):
-                    if self._site_auth_mode == "account" and self._session:
-                        return self._session.request(method, url, **kwargs)
-                    else:
-                        headers = kwargs.pop("headers", {})
-                        merged_headers = self._get_headers()
-                        merged_headers.update(headers)
-                        kwargs["headers"] = merged_headers
-                        return requests.request(method, url, **kwargs)
+                    return self._session.request(method, url, **kwargs)
+
+            # 情况2：有账号密码 → 完整登录（PoW+登录），自动填入Cookie
+            elif self._site_username and self._site_password:
+                logger.info("Cookie模式受到PoW拦截，尝试用账号密码登录...")
+                success, msg = self._site_login()
+                if success:
+                    logger.info("账号密码登录成功，Cookie已自动更新，使用Session重试")
+                    return self._session.request(method, url, **kwargs)
+                else:
+                    logger.error(f"账号密码登录失败: {msg}")
+
+            # 情况3：仅有Cookie → 解决PoW，合并browser_verified
             else:
-                # Cookie模式：创建临时session解决PoW
                 temp_session = requests.Session()
                 temp_session.headers.update(self._get_headers())
                 temp_session.get(self._site_url, timeout=30)
                 if self._solve_pow(temp_session):
-                    # 使用新的 browser_verified 重新请求
+                    # 合并新Cookie（browser_verified）到现有Cookie，不覆盖app_auth
                     new_cookies = temp_session.cookies.get_dict()
                     if new_cookies:
+                        existing = {}
+                        if self._site_cookie:
+                            for item in self._site_cookie.split("; "):
+                                if "=" in item:
+                                    k, v = item.split("=", 1)
+                                    existing[k] = v
+                        existing.update(new_cookies)
                         self._site_cookie = "; ".join(
-                            f"{k}={v}" for k, v in new_cookies.items()
+                            f"{k}={v}" for k, v in existing.items()
                         )
                     headers = kwargs.pop("headers", {})
                     merged_headers = self._get_headers()
@@ -746,8 +763,8 @@ class ClSearch(_PluginBase):
         if not self._enabled:
             return {"success": False, "message": "插件未启用"}
 
-        if self._site_auth_mode != "account":
-            return {"success": False, "message": "当前为Cookie模式，无需登录"}
+        if not self._site_username or not self._site_password:
+            return {"success": False, "message": "未配置站点用户名和密码"}
 
         success, msg = self._site_login()
         return {"success": success, "message": msg}
@@ -768,10 +785,7 @@ class ClSearch(_PluginBase):
 
         # 确保已认证
         if not self._ensure_authenticated():
-            if self._site_auth_mode == "account":
-                return {"success": False, "message": "站点自动登录失败，请检查用户名和密码"}
-            else:
-                return {"success": False, "message": "未配置站点Cookie，请从浏览器开发者工具中复制"}
+            return {"success": False, "message": "站点认证失败，请检查Cookie或账号密码配置"}
 
         if not keyword:
             return {"success": False, "message": "请输入搜索关键词"}
@@ -819,13 +833,12 @@ class ClSearch(_PluginBase):
         results = []
 
         try:
-            # 提取 _obj.search JSON
-            match = re.search(r'_obj\.search=(\{.*?\});', html_content)
-            if not match:
+            s_str = self._extract_json_obj(html_content, "search")
+            if not s_str:
                 logger.warning("未找到 _obj.search JSON数据")
                 return results
 
-            data = json.loads(match.group(1))
+            data = json.loads(s_str)
             items = data.get("l", {})
             titles = items.get("title", [])
             sizes = items.get("size", [])
@@ -882,10 +895,7 @@ class ClSearch(_PluginBase):
 
         # 确保已认证
         if not self._ensure_authenticated():
-            if self._site_auth_mode == "account":
-                return {"success": False, "message": "站点自动登录失败，请检查用户名和密码"}
-            else:
-                return {"success": False, "message": "未配置站点Cookie"}
+            return {"success": False, "message": "站点认证失败，请检查Cookie或账号密码配置"}
 
         try:
             detail_url = f"{self._site_url}{detail_path}"
@@ -1131,7 +1141,7 @@ class ClSearchSearchTool(MoviePilotTool):
         try:
             from app.core.plugin import PluginManager
             plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch")
+            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
             if not plugin:
                 return "观影磁力搜插件未运行，请先启用插件并配置站点信息"
 
@@ -1175,7 +1185,7 @@ class ClSearchDetailTool(MoviePilotTool):
         try:
             from app.core.plugin import PluginManager
             plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch")
+            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
             if not plugin:
                 return "观影磁力搜插件未运行"
 
@@ -1224,7 +1234,7 @@ class ClSearchOfflineTool(MoviePilotTool):
         try:
             from app.core.plugin import PluginManager
             plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch")
+            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
             if not plugin:
                 return "观影磁力搜插件未运行"
 
