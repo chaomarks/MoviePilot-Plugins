@@ -3,12 +3,12 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.2.3",
+    "version": "1.2.4",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
-      "v1.2.3": "优化配置界面，点击插件直接进入配置"
+      "v1.2.4": "修复命令参数读取，集成PoW验证，添加智能体工具"
     }
   }
 }
