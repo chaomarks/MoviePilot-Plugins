@@ -30,7 +30,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.2.2"
+    plugin_version = "1.2.3"
     # 插件作者
     plugin_author = "local"
     # 作者主页
@@ -466,7 +466,7 @@ class ClSearch(_PluginBase):
 
     def get_page(self) -> List[dict]:
         """返回插件详情页"""
-        return []
+        pass
 
     # ==================== 登录相关方法 ====================
 
