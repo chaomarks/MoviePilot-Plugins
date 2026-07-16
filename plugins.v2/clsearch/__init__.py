@@ -464,6 +464,10 @@ class ClSearch(_PluginBase):
             "_tabs": "site_tab",
         }
 
+    def get_page(self) -> List[dict]:
+        """返回插件详情页"""
+        return []
+
     # ==================== 登录相关方法 ====================
 
     def _site_login(self) -> Tuple[bool, str]:
