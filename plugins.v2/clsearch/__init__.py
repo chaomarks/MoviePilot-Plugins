@@ -33,7 +33,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.2.4"
+    plugin_version = "1.2.5"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -48,7 +48,6 @@ class ClSearch(_PluginBase):
     # 插件属性
     _enabled = False
     _site_url = ""
-    _site_auth_mode = "account"
     _site_cookie = ""
     _site_username = ""
     _site_password = ""
@@ -68,7 +67,6 @@ class ClSearch(_PluginBase):
         self.stop_service()
         self._enabled = False
         self._site_url = ""
-        self._site_auth_mode = "cookie"
         self._site_cookie = ""
         self._site_username = ""
         self._site_password = ""
@@ -83,8 +81,6 @@ class ClSearch(_PluginBase):
 
         self._enabled = bool(config.get("enabled"))
         self._site_url = str(config.get("site_url") or "").rstrip("/")
-        self._site_auth_mode = str(config.get("site_auth_mode") or "cookie")
-        self._site_cookie = str(config.get("site_cookie") or "")
         self._site_username = str(config.get("site_username") or "")
         self._site_password = str(config.get("site_password") or "")
         self._p115_cookie = str(config.get("p115_cookie") or "")
@@ -244,137 +240,41 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
-                    # 认证方式
+                    # 站点用户名
                     {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
-                                        "component": "VRadioGroup",
+                                        "component": "VTextField",
                                         "props": {
-                                            "model": "site_auth_mode",
-                                            "inline": True,
+                                            "model": "site_username",
+                                            "label": "站点用户名",
+                                            "placeholder": "输入站点登录用户名",
+                                            "hint": "支持用户名或邮箱登录",
+                                            "persistent-hint": True,
                                         },
-                                        "content": [
-                                            {
-                                                "component": "VRadio",
-                                                "props": {
-                                                    "label": "账号密码登录（推荐）",
-                                                    "value": "account",
-                                                },
-                                            },
-                                            {
-                                                "component": "VRadio",
-                                                "props": {
-                                                    "label": "手动Cookie",
-                                                    "value": "cookie",
-                                                },
-                                            },
-                                        ],
                                     }
                                 ],
                             },
-                        ],
-                    },
-                    # 账号密码登录区域
-                    {
-                        "component": "div",
-                        "props": {
-                            "v-if": "site_auth_mode === 'account'",
-                        },
-                        "content": [
                             {
-                                "component": "VRow",
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 6},
-                                        "content": [
-                                            {
-                                                "component": "VTextField",
-                                                "props": {
-                                                    "model": "site_username",
-                                                    "label": "站点用户名",
-                                                    "placeholder": "输入站点登录用户名",
-                                                    "hint": "支持用户名或邮箱登录",
-                                                    "persistent-hint": True,
-                                                },
-                                            }
-                                        ],
-                                    },
-                                    {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 6},
-                                        "content": [
-                                            {
-                                                "component": "VTextField",
-                                                "props": {
-                                                    "model": "site_password",
-                                                    "label": "站点密码",
-                                                    "placeholder": "输入站点登录密码",
-                                                    "type": "password",
-                                                    "hint": "密码仅用于自动登录，保存在本地配置中",
-                                                    "persistent-hint": True,
-                                                },
-                                            }
-                                        ],
-                                    },
-                                ],
-                            },
-                            {
-                                "component": "VRow",
-                                "content": [
-                                    {
-                                        "component": "VCol",
-                                        "props": {"cols": 12},
-                                        "content": [
-                                            {
-                                                "component": "VAlert",
-                                                "props": {
-                                                    "type": "info",
-                                                    "variant": "tonal",
-                                                    "density": "compact",
-                                                },
-                                                "text": "账号密码模式下，插件会自动登录获取Cookie并保持会话。若遇到验证码，可在浏览器登录后切换为手动Cookie模式。",
-                                            }
-                                        ],
-                                    },
-                                ],
-                            },
-                        ],
-                    },
-                    # 手动Cookie区域
-                    {
-                        "component": "div",
-                        "props": {
-                            "v-if": "site_auth_mode === 'cookie'",
-                        },
-                        "content": [
-                            {
-                                "component": "VRow",
-                                "content": [
-                                    {
-                                        "component": "VCol",
-                                        "props": {"cols": 12},
-                                        "content": [
-                                            {
-                                                "component": "VTextarea",
-                                                "props": {
-                                                    "model": "site_cookie",
-                                                    "label": "站点Cookie",
-                                                    "placeholder": "粘贴从浏览器复制的完整Cookie字符串",
-                                                    "hint": "从浏览器开发者工具(F12)中复制完整Cookie，需包含app_auth和browser_verified等字段",
-                                                    "persistent-hint": True,
-                                                    "rows": 3,
-                                                    "variant": "outlined",
-                                                    "density": "compact",
-                                                },
-                                            }
-                                        ],
-                                    },
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "site_password",
+                                            "label": "站点密码",
+                                            "placeholder": "输入站点登录密码",
+                                            "type": "password",
+                                            "hint": "密码仅用于自动登录，保存在本地配置中",
+                                            "persistent-hint": True,
+                                        },
+                                    }
                                 ],
                             },
                         ],
@@ -469,8 +369,6 @@ class ClSearch(_PluginBase):
         ], {
             "enabled": False,
             "site_url": "",
-            "site_auth_mode": "account",
-            "site_cookie": "",
             "site_username": "",
             "site_password": "",
             "p115_cookie": "",
@@ -1028,7 +926,7 @@ class ClSearch(_PluginBase):
             logger.info(f"添加115离线下载: {title}")
 
             # 调用离线下载API
-            result = client.clouddownload_task_add_url(**params)
+            result = client.clouddownload_task_add_url(params)
 
             if result and result.get("state"):
                 logger.info(f"115离线下载添加成功: {title}")

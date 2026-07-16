@@ -3,12 +3,12 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
-      "v1.2.4": "修复命令参数读取，集成PoW验证，添加智能体工具"
+      "v1.2.5": "修复115离线下载SSP传参，简化配置界面，去除认证方式选择"
     }
   }
 }
