@@ -46,7 +46,7 @@ class ClSearch(_PluginBase):
     # 插件属性
     _enabled = False
     _site_url = ""
-    _site_auth_mode = "cookie"  # "cookie" 或 "account"
+    _site_auth_mode = "account"
     _site_cookie = ""
     _site_username = ""
     _site_password = ""
@@ -481,10 +481,66 @@ class ClSearch(_PluginBase):
         """返回插件详情页"""
         pass
 
+    # ==================== PoW 验证 ====================
+
+    def _solve_pow(self, session: requests.Session) -> bool:
+        """解决 PoW（工作量证明）挑战，获取 browser_verified Cookie
+
+        Args:
+            session: 当前请求会话
+
+        Returns:
+            True表示成功，False表示失败
+        """
+        try:
+            # 获取 PoW 挑战
+            chal_resp = session.get(f"{self._site_url}/res/pow", timeout=30)
+            if chal_resp.status_code != 200:
+                logger.error(f"获取PoW挑战失败: HTTP {chal_resp.status_code}")
+                return False
+
+            challenge = chal_resp.json()
+            if "error" in challenge:
+                logger.error(f"PoW挑战错误: {challenge.get('error')}")
+                return False
+
+            N_hex = challenge["N"]
+            x_hex = challenge["x"]
+            t = int(challenge["t"])
+
+            logger.info(f"开始PoW计算: t={t} 次迭代...")
+
+            # 计算 y = x^(2^t) mod N
+            bigN = int(N_hex, 16)
+            y = int(x_hex, 16)
+            for i in range(t):
+                y = (y * y) % bigN
+
+            y_hex = hex(y)[2:]
+            logger.info(f"PoW计算完成")
+
+            # 提交 PoW 解
+            verify_resp = session.post(
+                f"{self._site_url}/res/pow",
+                data={"y": y_hex},
+                timeout=30,
+            )
+            verify_data = verify_resp.json()
+            if verify_data.get("success"):
+                logger.info("PoW验证通过，已获取 browser_verified")
+                return True
+            else:
+                logger.error(f"PoW提交失败: {verify_data}")
+                return False
+
+        except Exception as e:
+            logger.error(f"PoW验证异常: {e}")
+            return False
+
     # ==================== 登录相关方法 ====================
 
     def _site_login(self) -> Tuple[bool, str]:
-        """使用账号密码登录站点，获取Cookie
+        """使用账号密码登录站点，含 PoW 验证
 
         Returns:
             (success, message) 元组
@@ -497,19 +553,27 @@ class ClSearch(_PluginBase):
                 return False, "未配置站点用户名或密码"
 
             try:
-                login_url = f"{self._site_url}/user/login"
-                logger.info(f"正在登录站点: {login_url}")
-
-                # 创建新的Session以自动管理Cookie
+                # 创建新的Session
                 session = requests.Session()
                 session.headers.update({
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                })
+
+                # 1. 先访问首页建立 PoW 会话
+                session.get(self._site_url, timeout=30)
+
+                # 2. PoW 验证
+                if not self._solve_pow(session):
+                    return False, "PoW验证失败，站点安全防护拦截"
+
+                # 3. 登录
+                login_url = f"{self._site_url}/user/login"
+                session.headers.update({
                     "Referer": login_url,
                     "Origin": self._site_url,
                     "Content-Type": "application/x-www-form-urlencoded",
                 })
 
-                # 构建登录表单数据
                 login_data = {
                     "username": self._site_username,
                     "password": self._site_password,
@@ -526,43 +590,28 @@ class ClSearch(_PluginBase):
                 )
                 resp.raise_for_status()
 
-                # 尝试解析JSON响应
                 try:
                     result = resp.json()
                     code = result.get("code")
                     msg = result.get("msg", "")
 
                     if code == 200:
-                        # 登录成功，提取Cookie字符串
                         cookie_dict = session.cookies.get_dict()
                         if cookie_dict:
-                            cookie_str = "; ".join(
+                            self._session = session
+                            self._site_cookie = "; ".join(
                                 f"{k}={v}" for k, v in cookie_dict.items()
                             )
-                            self._session = session
-                            self._site_cookie = cookie_str
                             logger.info(f"站点登录成功，获取到 {len(cookie_dict)} 个Cookie字段")
                             return True, "登录成功"
                         else:
-                            # 检查Set-Cookie头
-                            if resp.cookies:
-                                cookie_str = "; ".join(
-                                    f"{k}={v}" for k, v in resp.cookies.items()
-                                )
-                                self._session = session
-                                self._site_cookie = cookie_str
-                                logger.info("站点登录成功（从Set-Cookie获取）")
-                                return True, "登录成功"
-                            return False, "登录响应成功但未获取到Cookie"
+                            return False, "登录成功但未获取到Cookie"
                     else:
-                        # 登录失败
                         error_msg = msg or f"错误码: {code}"
                         logger.error(f"站点登录失败: {error_msg}")
                         return False, f"登录失败: {error_msg}"
 
                 except (json.JSONDecodeError, ValueError):
-                    # 非JSON响应，检查是否通过Cookie判断登录成功
-                    # 某些站点登录成功后会302重定向
                     if resp.history and resp.cookies:
                         cookie_str = "; ".join(
                             f"{k}={v}" for k, v in resp.cookies.items()
@@ -611,10 +660,7 @@ class ClSearch(_PluginBase):
         return headers
 
     def _do_request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """发起HTTP请求，自动处理认证
-
-        账号密码模式下使用Session（自动携带Cookie），
-        Cookie模式下使用普通请求。
+        """发起HTTP请求，自动处理 PoW 和认证
 
         Args:
             method: HTTP方法 (GET, POST等)
@@ -627,15 +673,71 @@ class ClSearch(_PluginBase):
         kwargs.setdefault("timeout", 30)
 
         if self._site_auth_mode == "account" and self._session:
-            # 使用已登录的Session
             return self._session.request(method, url, **kwargs)
         else:
-            # 使用普通请求 + Cookie头
             headers = kwargs.pop("headers", {})
             merged_headers = self._get_headers()
             merged_headers.update(headers)
             kwargs["headers"] = merged_headers
             return requests.request(method, url, **kwargs)
+
+    def _request_with_pow(self, method: str, url: str, **kwargs) -> requests.Response:
+        """发起请求，自动处理 PoW 拦截
+
+        如果响应被 PoW 拦截，自动解决 PoW 后重试。
+
+        Args:
+            method: HTTP方法
+            url: 请求URL
+            **kwargs: 传递给requests的其他参数
+
+        Returns:
+            requests.Response对象
+        """
+        kwargs.setdefault("timeout", 30)
+        kwargs.setdefault("allow_redirects", True)
+
+        if self._site_auth_mode == "account" and self._session:
+            resp = self._session.request(method, url, **kwargs)
+        else:
+            headers = kwargs.pop("headers", {})
+            merged_headers = self._get_headers()
+            merged_headers.update(headers)
+            kwargs["headers"] = merged_headers
+            resp = requests.request(method, url, **kwargs)
+
+        # 检查是否被 PoW 拦截
+        if "powSolve" in resp.text or "安全验证" in resp.text:
+            logger.info("请求被PoW拦截，尝试解决...")
+            if self._site_auth_mode == "account" and self._session:
+                if self._solve_pow(self._session):
+                    if self._site_auth_mode == "account" and self._session:
+                        return self._session.request(method, url, **kwargs)
+                    else:
+                        headers = kwargs.pop("headers", {})
+                        merged_headers = self._get_headers()
+                        merged_headers.update(headers)
+                        kwargs["headers"] = merged_headers
+                        return requests.request(method, url, **kwargs)
+            else:
+                # Cookie模式：创建临时session解决PoW
+                temp_session = requests.Session()
+                temp_session.headers.update(self._get_headers())
+                temp_session.get(self._site_url, timeout=30)
+                if self._solve_pow(temp_session):
+                    # 使用新的 browser_verified 重新请求
+                    new_cookies = temp_session.cookies.get_dict()
+                    if new_cookies:
+                        self._site_cookie = "; ".join(
+                            f"{k}={v}" for k, v in new_cookies.items()
+                        )
+                    headers = kwargs.pop("headers", {})
+                    merged_headers = self._get_headers()
+                    merged_headers.update(headers)
+                    kwargs["headers"] = merged_headers
+                    return requests.request(method, url, **kwargs)
+
+        return resp
 
     def _api_login(self) -> dict:
         """API: 手动触发站点登录"""
@@ -683,25 +785,8 @@ class ClSearch(_PluginBase):
 
             logger.info(f"搜索影视磁力资源: {keyword}, URL: {search_url}")
 
-            resp = self._do_request("GET", search_url, params=params)
+            resp = self._request_with_pow("GET", search_url, params=params)
             resp.raise_for_status()
-
-            # 检查是否返回了登录页面或验证页面
-            if "browser_verified" in resp.text and "PoW" in resp.text:
-                # 账号密码模式下尝试重新登录
-                if self._site_auth_mode == "account":
-                    self._session = None
-                    success, msg = self._site_login()
-                    if success:
-                        resp = self._do_request("GET", search_url, params=params)
-                        resp.raise_for_status()
-                    else:
-                        return {"success": False, "message": f"Cookie失效且重新登录失败: {msg}"}
-                else:
-                    return {
-                        "success": False,
-                        "message": "Cookie已失效或缺少browser_verified字段，请重新从浏览器复制完整Cookie",
-                    }
 
             # 解析搜索结果页面
             results = self._parse_search_page(resp.text)
@@ -728,49 +813,52 @@ class ClSearch(_PluginBase):
             return {"success": False, "message": f"搜索异常: {str(e)}"}
 
     def _parse_search_page(self, html_content: str) -> List[dict]:
-        """解析搜索结果页面，提取种子列表"""
+        """解析搜索结果页面，从 _obj.search JSON 中提取种子列表"""
         results = []
 
         try:
-            # 使用正则解析表格行
-            # 匹配每个种子行：标题链接、大小、做种数、更新时间
-            # 格式: <td><a href="/bt/xxxxx" ...>标题</a></td><td>大小</td><td>做种</td><td>时间</td>
-            row_pattern = re.compile(
-                r'<td[^>]*>\s*<a\s+href="(/bt/[^"]+)"[^>]*>(.*?)</a>\s*</td>'
-                r'\s*<td[^>]*>(.*?)</td>'
-                r'\s*<td[^>]*>(.*?)</td>'
-                r'\s*<td[^>]*>(.*?)</td>',
-                re.DOTALL,
-            )
+            # 提取 _obj.search JSON
+            match = re.search(r'_obj\.search=(\{.*?\});', html_content)
+            if not match:
+                logger.warning("未找到 _obj.search JSON数据")
+                return results
 
-            for match in row_pattern.finditer(html_content):
+            data = json.loads(match.group(1))
+            items = data.get("l", {})
+            titles = items.get("title", [])
+            sizes = items.get("size", [])
+            seeds = items.get("seeds", [])
+            times = items.get("time", [])
+            detail_ids = items.get("i", [])
+            detail_types = items.get("d", [])
+
+            for i in range(len(titles)):
                 try:
-                    detail_path = match.group(1).strip()
-                    # 清理标题中的HTML标签
-                    title_raw = match.group(2)
-                    title = re.sub(r'<[^>]+>', '', title_raw).strip()
-                    size_text = re.sub(r'<[^>]+>', '', match.group(3)).strip()
-                    seeders = re.sub(r'<[^>]+>', '', match.group(4)).strip()
-                    update_time = re.sub(r'<[^>]+>', '', match.group(5)).strip()
+                    title = titles[i]
+                    size_text = sizes[i] if i < len(sizes) else ""
+                    seeders = seeds[i] if i < len(seeds) else 0
+                    update_time = times[i] if i < len(times) else ""
+                    detail_id = detail_ids[i] if i < len(detail_ids) else ""
+                    detail_type = detail_types[i] if i < len(detail_types) else "bt"
 
-                    if not title or not detail_path:
+                    if not title or not detail_id:
                         continue
 
-                    # 生成唯一ID
+                    detail_path = f"/{detail_type}/{detail_id}"
                     unique_id = hashlib.md5(detail_path.encode()).hexdigest()[:12]
 
                     results.append({
                         "id": unique_id,
                         "title": title,
                         "size": size_text,
-                        "seeders": seeders,
+                        "seeders": str(seeders),
                         "update_time": update_time,
                         "detail_path": detail_path,
                         "detail_url": f"{self._site_url}{detail_path}",
                     })
 
                 except Exception as e:
-                    logger.warning(f"解析搜索结果行失败: {e}")
+                    logger.warning(f"解析搜索结果项失败: {e}")
                     continue
 
         except Exception as e:
@@ -801,7 +889,7 @@ class ClSearch(_PluginBase):
             detail_url = f"{self._site_url}{detail_path}"
             logger.info(f"获取资源详情: {detail_url}")
 
-            resp = self._do_request("GET", detail_url)
+            resp = self._request_with_pow("GET", detail_url)
             resp.raise_for_status()
 
             # 解析详情页面
@@ -819,54 +907,69 @@ class ClSearch(_PluginBase):
             logger.error(f"获取详情异常: {e}")
             return {"success": False, "message": f"获取详情异常: {str(e)}"}
 
+    @staticmethod
+    def _extract_json_obj(text: str, key: str) -> Optional[str]:
+        """从JS文本中提取 _obj.key = {...}; 的JSON字符串，正确处理嵌套括号
+
+        Args:
+            text: 包含JS代码的HTML文本
+            key: _obj.xxx 中的 xxx 键名
+
+        Returns:
+            JSON字符串，失败返回None
+        """
+        start_marker = f"_obj.{key}="
+        idx = text.find(start_marker)
+        if idx < 0:
+            return None
+        idx += len(start_marker)
+        while idx < len(text) and text[idx] != '{':
+            idx += 1
+        if idx >= len(text):
+            return None
+        depth = 0
+        buf = []
+        for i in range(idx, len(text)):
+            ch = text[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    buf.append(ch)
+                    break
+            buf.append(ch)
+        return ''.join(buf)
+
     def _parse_detail_page(self, html_content: str) -> Optional[dict]:
-        """解析详情页面，提取磁力链接和文件信息"""
+        """解析详情页面，从 _obj.d JSON 提取磁力链接和文件信息"""
         try:
-            # 提取标题
-            title = ""
-            title_match = re.search(r'<title[^>]*>(.*?)</title>', html_content, re.DOTALL)
-            if title_match:
-                title = title_match.group(1).strip()
+            d_str = self._extract_json_obj(html_content, "d")
+            if not d_str:
+                logger.warning("未找到 _obj.d JSON数据")
+                return None
 
-            # 提取磁力链接
-            magnet = ""
-            magnet_match = re.search(r'href="(magnet:\?xt=urn:btih:[^"]+)"', html_content)
-            if magnet_match:
-                magnet = magnet_match.group(1)
+            data = json.loads(d_str)
 
-            # 提取种子下载链接
+            magnet = data.get("magnet", "")
+
+            torrent_hash = data.get("torrent", "")
             torrent_url = ""
-            torrent_match = re.search(r'href="(/dbt/[^"]+)"', html_content)
-            if torrent_match:
-                torrent_url = f"{self._site_url}{torrent_match.group(1)}"
+            if torrent_hash:
+                torrent_url = f"{self._site_url}/dbt/{torrent_hash}"
 
-            # 提取离线下载链接
-            offline_url = ""
-            offline_match = re.search(r'href="(https?://keepshare\.org/[^"]+)"', html_content)
-            if offline_match:
-                offline_url = offline_match.group(1)
-
-            # 提取文件列表
+            filelist = data.get("filelist", [])
             files = []
-            file_pattern = re.compile(r'<li[^>]*class="[^"]*file[^"]*"[^>]*>(.*?)</li>', re.DOTALL)
-            for file_match in file_pattern.finditer(html_content):
-                file_name = re.sub(r'<[^>]+>', '', file_match.group(1)).strip()
-                if file_name:
-                    files.append(file_name)
-
-            # 提取文件大小信息（从文件列表中）
-            file_size_pattern = re.compile(r'\((\d+\.?\d*\s*[KMGT]B)\)')
-            file_sizes = []
-            for size_match in file_size_pattern.finditer(html_content):
-                file_sizes.append(size_match.group(1))
+            for f in filelist:
+                if isinstance(f, str):
+                    files.append(f)
 
             return {
-                "title": title,
+                "title": data.get("title", ""),
                 "magnet": magnet,
                 "torrent_url": torrent_url,
-                "offline_url": offline_url,
+                "offline_url": "",
                 "files": files,
-                "file_sizes": file_sizes,
             }
 
         except Exception as e:
