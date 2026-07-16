@@ -14,10 +14,11 @@ from urllib.parse import urljoin, quote
 
 import requests
 
-from app.core.event import Event
+from app.core.event import Event, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
+from app.schemas.types import EventType
 
 
 class ClSearch(_PluginBase):
@@ -99,11 +100,11 @@ class ClSearch(_PluginBase):
         return [
             {
                 "cmd": "/clsearch",
-                "event": "clsearch",
+                "event": EventType.PluginAction,
                 "desc": "观影搜",
                 "category": "观影搜",
                 "data": {
-                    "action": "search",
+                    "action": "clsearch",
                 },
             }
         ]
@@ -936,25 +937,24 @@ class ClSearch(_PluginBase):
             logger.error(f"115离线下载异常: {e}")
             return {"success": False, "message": f"下载异常: {str(e)}"}
 
+    @eventmanager.register(EventType.PluginAction)
     def handle_event(self, event: Event) -> None:
-        """处理事件"""
-        if event.event_type == "clsearch":
-            data = event.event_data or {}
-            action = data.get("action")
+        """处理插件命令事件"""
+        event_data = event.event_data or {}
+        if event_data.get("action") != "clsearch":
+            return
 
-            if action == "search":
-                keyword = data.get("keyword") or ""
-                if keyword:
-                    result = self._api_search(keyword)
-                    # 发送搜索结果通知
-                    if result.get("success") and result.get("data"):
-                        self._send_search_results(keyword, result["data"])
-                    else:
-                        self.post_message(
-                            title="观影搜",
-                            content=result.get("message", "搜索失败"),
-                            notification_type=NotificationType.Warning,
-                        )
+        keyword = event_data.get("keyword") or ""
+        if keyword:
+            result = self._api_search(keyword)
+            if result.get("success") and result.get("data"):
+                self._send_search_results(keyword, result["data"])
+            else:
+                self.post_message(
+                    title="观影搜",
+                    content=result.get("message", "搜索失败"),
+                    notification_type=NotificationType.Warning,
+                )
 
     def _send_search_results(self, keyword: str, results: List[dict]) -> None:
         """发送搜索结果通知"""
