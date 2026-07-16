@@ -180,270 +180,283 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
-                    # ========== Tab导航 ==========
+                    # ========== 说明提示 ==========
                     {
-                        "component": "VTabs",
-                        "props": {
-                            "model": "_tabs",
-                            "style": {
-                                "margin-top": "8px",
-                                "margin-bottom": "16px",
-                            },
-                            "stacked": True,
-                            "fixed-tabs": True,
-                        },
+                        "component": "VRow",
                         "content": [
                             {
-                                "component": "VTab",
-                                "props": {"value": "site_tab"},
-                                "text": "网站配置",
-                            },
-                            {
-                                "component": "VTab",
-                                "props": {"value": "p115_tab"},
-                                "text": "115网盘配置",
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "density": "compact",
+                                            "class": "mt-2",
+                                        },
+                                        "text": "（此插件仅通过智能体工具调用）",
+                                    }
+                                ],
                             },
                         ],
                     },
-                    # ========== Tab内容 ==========
+                    # ========== 分隔标题：网站配置 ==========
                     {
-                        "component": "VWindow",
-                        "props": {"model": "_tabs"},
+                        "component": "VRow",
                         "content": [
-                            # ---------- 网站配置 ----------
                             {
-                                "component": "VWindowItem",
-                                "props": {"value": "site_tab"},
+                                "component": "VCol",
+                                "props": {"cols": 12},
                                 "content": [
                                     {
-                                        "component": "VRow",
+                                        "component": "VSubheader",
+                                        "props": {"class": "text-subtitle-2 font-weight-bold mt-4 mb-1"},
+                                        "text": "网站配置",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 站点地址
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
                                         "props": {
-                                            "style": {"margin-top": "8px"},
+                                            "model": "site_url",
+                                            "label": "站点地址",
+                                            "placeholder": "https://www.example.com",
+                                            "hint": "影视资源站点的基础URL，不含末尾斜杠",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 认证方式
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VRadioGroup",
+                                        "props": {
+                                            "model": "site_auth_mode",
+                                            "inline": True,
                                         },
                                         "content": [
                                             {
-                                                "component": "VCol",
-                                                "props": {"cols": 12},
-                                                "content": [
-                                                    {
-                                                        "component": "VTextField",
-                                                        "props": {
-                                                            "model": "site_url",
-                                                            "label": "站点地址",
-                                                            "placeholder": "https://www.example.com",
-                                                            "hint": "影视资源站点的基础URL，不含末尾斜杠",
-                                                            "persistent-hint": True,
-                                                        },
-                                                    }
-                                                ],
+                                                "component": "VRadio",
+                                                "props": {
+                                                    "label": "账号密码登录（推荐）",
+                                                    "value": "account",
+                                                },
                                             },
+                                            {
+                                                "component": "VRadio",
+                                                "props": {
+                                                    "label": "手动Cookie",
+                                                    "value": "cookie",
+                                                },
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 账号密码登录区域
+                    {
+                        "component": "div",
+                        "props": {
+                            "v-if": "site_auth_mode === 'account'",
+                        },
+                        "content": [
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "VTextField",
+                                                "props": {
+                                                    "model": "site_username",
+                                                    "label": "站点用户名",
+                                                    "placeholder": "输入站点登录用户名",
+                                                    "hint": "支持用户名或邮箱登录",
+                                                    "persistent-hint": True,
+                                                },
+                                            }
                                         ],
                                     },
                                     {
-                                        "component": "VRow",
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
                                         "content": [
                                             {
-                                                "component": "VCol",
-                                                "props": {"cols": 12},
-                                                "content": [
-                                                    {
-                                                        "component": "VRadioGroup",
-                                                        "props": {
-                                                            "model": "site_auth_mode",
-                                                            "inline": True,
-                                                        },
-                                                        "content": [
-                                                            {
-                                                                "component": "VRadio",
-                                                                "props": {
-                                                                    "label": "账号密码登录（推荐）",
-                                                                    "value": "account",
-                                                                },
-                                                            },
-                                                            {
-                                                                "component": "VRadio",
-                                                                "props": {
-                                                                    "label": "手动Cookie",
-                                                                    "value": "cookie",
-                                                                },
-                                                            },
-                                                        ],
-                                                    }
-                                                ],
-                                            },
-                                        ],
-                                    },
-                                    # 账号密码登录区域
-                                    {
-                                        "component": "div",
-                                        "props": {
-                                            "v-if": "site_auth_mode === 'account'",
-                                        },
-                                        "content": [
-                                            {
-                                                "component": "VRow",
-                                                "content": [
-                                                    {
-                                                        "component": "VCol",
-                                                        "props": {"cols": 12, "md": 6},
-                                                        "content": [
-                                                            {
-                                                                "component": "VTextField",
-                                                                "props": {
-                                                                    "model": "site_username",
-                                                                    "label": "站点用户名",
-                                                                    "placeholder": "输入站点登录用户名",
-                                                                    "hint": "支持用户名或邮箱登录",
-                                                                    "persistent-hint": True,
-                                                                },
-                                                            }
-                                                        ],
-                                                    },
-                                                    {
-                                                        "component": "VCol",
-                                                        "props": {"cols": 12, "md": 6},
-                                                        "content": [
-                                                            {
-                                                                "component": "VTextField",
-                                                                "props": {
-                                                                    "model": "site_password",
-                                                                    "label": "站点密码",
-                                                                    "placeholder": "输入站点登录密码",
-                                                                    "type": "password",
-                                                                    "hint": "密码仅用于自动登录，保存在本地配置中",
-                                                                    "persistent-hint": True,
-                                                                },
-                                                            }
-                                                        ],
-                                                    },
-                                                ],
-                                            },
-                                            {
-                                                "component": "VRow",
-                                                "content": [
-                                                    {
-                                                        "component": "VCol",
-                                                        "props": {"cols": 12},
-                                                        "content": [
-                                                            {
-                                                                "component": "VAlert",
-                                                                "props": {
-                                                                    "type": "info",
-                                                                    "variant": "tonal",
-                                                                    "density": "compact",
-                                                                },
-                                                                "text": "账号密码模式下，插件会自动登录获取Cookie并保持会话。若遇到验证码，可在浏览器登录后切换为手动Cookie模式。",
-                                                            }
-                                                        ],
-                                                    },
-                                                ],
-                                            },
-                                        ],
-                                    },
-                                    # 手动Cookie区域
-                                    {
-                                        "component": "div",
-                                        "props": {
-                                            "v-if": "site_auth_mode === 'cookie'",
-                                        },
-                                        "content": [
-                                            {
-                                                "component": "VRow",
-                                                "content": [
-                                                    {
-                                                        "component": "VCol",
-                                                        "props": {"cols": 12},
-                                                        "content": [
-                                                            {
-                                                                "component": "VTextarea",
-                                                                "props": {
-                                                                    "model": "site_cookie",
-                                                                    "label": "站点Cookie",
-                                                                    "placeholder": "粘贴从浏览器复制的完整Cookie字符串",
-                                                                    "hint": "从浏览器开发者工具(F12)中复制完整Cookie，需包含app_auth和browser_verified等字段",
-                                                                    "persistent-hint": True,
-                                                                    "rows": 3,
-                                                                    "variant": "outlined",
-                                                                    "density": "compact",
-                                                                },
-                                                            }
-                                                        ],
-                                                    },
-                                                ],
-                                            },
+                                                "component": "VTextField",
+                                                "props": {
+                                                    "model": "site_password",
+                                                    "label": "站点密码",
+                                                    "placeholder": "输入站点登录密码",
+                                                    "type": "password",
+                                                    "hint": "密码仅用于自动登录，保存在本地配置中",
+                                                    "persistent-hint": True,
+                                                },
+                                            }
                                         ],
                                     },
                                 ],
                             },
-                            # ---------- 115网盘配置 ----------
                             {
-                                "component": "VWindowItem",
-                                "props": {"value": "p115_tab"},
+                                "component": "VRow",
                                 "content": [
                                     {
-                                        "component": "VRow",
-                                        "props": {
-                                            "style": {"margin-top": "8px"},
-                                        },
+                                        "component": "VCol",
+                                        "props": {"cols": 12},
                                         "content": [
                                             {
-                                                "component": "VCol",
-                                                "props": {"cols": 12},
-                                                "content": [
-                                                    {
-                                                        "component": "VTextarea",
-                                                        "props": {
-                                                            "model": "p115_cookie",
-                                                            "label": "115网盘Cookie",
-                                                            "placeholder": "输入115网盘的Cookie",
-                                                            "hint": "用于115离线下载的认证Cookie，建议粘贴完整的Cookie字符串",
-                                                            "persistent-hint": True,
-                                                            "rows": 3,
-                                                            "variant": "outlined",
-                                                            "density": "compact",
-                                                        },
-                                                    }
-                                                ],
-                                            },
+                                                "component": "VAlert",
+                                                "props": {
+                                                    "type": "info",
+                                                    "variant": "tonal",
+                                                    "density": "compact",
+                                                },
+                                                "text": "账号密码模式下，插件会自动登录获取Cookie并保持会话。若遇到验证码，可在浏览器登录后切换为手动Cookie模式。",
+                                            }
                                         ],
                                     },
+                                ],
+                            },
+                        ],
+                    },
+                    # 手动Cookie区域
+                    {
+                        "component": "div",
+                        "props": {
+                            "v-if": "site_auth_mode === 'cookie'",
+                        },
+                        "content": [
+                            {
+                                "component": "VRow",
+                                "content": [
                                     {
-                                        "component": "VRow",
+                                        "component": "VCol",
+                                        "props": {"cols": 12},
                                         "content": [
                                             {
-                                                "component": "VCol",
-                                                "props": {"cols": 12, "md": 6},
-                                                "content": [
-                                                    {
-                                                        "component": "VTextField",
-                                                        "props": {
-                                                            "model": "save_dir_id",
-                                                            "label": "离线下载目录ID",
-                                                            "placeholder": "例如：123456789",
-                                                            "hint": "115网盘中保存离线下载文件的目录ID",
-                                                            "persistent-hint": True,
-                                                        },
-                                                    }
-                                                ],
-                                            },
-                                            {
-                                                "component": "VCol",
-                                                "props": {"cols": 12, "md": 6},
-                                                "content": [
-                                                    {
-                                                        "component": "VTextField",
-                                                        "props": {
-                                                            "model": "save_path",
-                                                            "label": "保存路径（可选）",
-                                                            "placeholder": "例如：/影视/电影",
-                                                            "hint": "在目录ID下的相对路径，留空则保存到目录根",
-                                                            "persistent-hint": True,
-                                                        },
-                                                    }
-                                                ],
-                                            },
+                                                "component": "VTextarea",
+                                                "props": {
+                                                    "model": "site_cookie",
+                                                    "label": "站点Cookie",
+                                                    "placeholder": "粘贴从浏览器复制的完整Cookie字符串",
+                                                    "hint": "从浏览器开发者工具(F12)中复制完整Cookie，需包含app_auth和browser_verified等字段",
+                                                    "persistent-hint": True,
+                                                    "rows": 3,
+                                                    "variant": "outlined",
+                                                    "density": "compact",
+                                                },
+                                            }
                                         ],
                                     },
+                                ],
+                            },
+                        ],
+                    },
+                    # ========== 分隔线 ==========
+                    {
+                        "component": "VDivider",
+                        "props": {"class": "mt-4 mb-4"},
+                    },
+                    # ========== 分隔标题：115网盘配置 ==========
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VSubheader",
+                                        "props": {"class": "text-subtitle-2 font-weight-bold mb-1"},
+                                        "text": "115网盘配置",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 115网盘Cookie
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "p115_cookie",
+                                            "label": "115网盘Cookie",
+                                            "placeholder": "输入115网盘的Cookie",
+                                            "hint": "用于115离线下载的认证Cookie，建议粘贴完整的Cookie字符串",
+                                            "persistent-hint": True,
+                                            "rows": 3,
+                                            "variant": "outlined",
+                                            "density": "compact",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # 离线下载目录ID + 保存路径
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "save_dir_id",
+                                            "label": "离线下载目录ID",
+                                            "placeholder": "例如：123456789",
+                                            "hint": "115网盘中保存离线下载文件的目录ID",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "save_path",
+                                            "label": "保存路径（可选）",
+                                            "placeholder": "例如：/影视/电影",
+                                            "hint": "在目录ID下的相对路径，留空则保存到目录根",
+                                            "persistent-hint": True,
+                                        },
+                                    }
                                 ],
                             },
                         ],
@@ -461,7 +474,6 @@ class ClSearch(_PluginBase):
             "save_dir_id": "",
             "save_path": "",
             "use_mp_rename": False,
-            "_tabs": "site_tab",
         }
 
     def get_page(self) -> List[dict]:
