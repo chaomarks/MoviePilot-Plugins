@@ -33,7 +33,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.2.5"
+    plugin_version = "1.2.6"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -55,6 +55,7 @@ class ClSearch(_PluginBase):
     _save_dir_id = ""
     _save_path = ""
     _use_mp_rename = False
+    _resolved_path = ""  # CID 解析出的完整路径
 
     # 搜索结果缓存
     _search_cache: Dict[str, Any] = {}
@@ -74,6 +75,7 @@ class ClSearch(_PluginBase):
         self._save_dir_id = ""
         self._save_path = ""
         self._use_mp_rename = False
+        self._resolved_path = ""
         self._session = None
 
         if not config:
@@ -87,6 +89,16 @@ class ClSearch(_PluginBase):
         self._save_dir_id = str(config.get("save_dir_id") or "")
         self._save_path = str(config.get("save_path") or "")
         self._use_mp_rename = bool(config.get("use_mp_rename"))
+
+        # CID 变更时自动解析路径
+        if self._save_dir_id and self._p115_cookie:
+            try:
+                resolved = self._resolve_cid_path(self._save_dir_id)
+                if resolved:
+                    self._resolved_path = resolved
+                    logger.info(f"CID {self._save_dir_id} 解析为: {resolved}")
+            except Exception as e:
+                logger.warning(f"CID路径解析失败: {e}")
 
     def get_state(self) -> bool:
         """获取插件启用状态"""
@@ -137,6 +149,13 @@ class ClSearch(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "账号密码登录站点",
+            },
+            {
+                "path": "resolve_cid",
+                "endpoint": self._api_resolve_cid,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "通过CID解析115目录完整路径",
             },
         ]
 
@@ -326,21 +345,21 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
-                    # 离线下载目录ID + 保存路径
+                    # 离线下载目录CID + 解析路径 + 保存路径
                     {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "save_dir_id",
-                                            "label": "离线下载目录ID",
+                                            "label": "目录CID",
                                             "placeholder": "例如：123456789",
-                                            "hint": "115网盘中保存离线下载文件的目录ID",
+                                            "hint": "115网盘目录的CID，保存配置后自动解析为完整路径",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -348,15 +367,31 @@ class ClSearch(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "resolved_path",
+                                            "label": "解析路径",
+                                            "readonly": True,
+                                            "hint": "CID自动解析出的完整路径（如 /影视/电视剧）",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "save_path",
-                                            "label": "保存路径（可选）",
-                                            "placeholder": "例如：/影视/电影",
-                                            "hint": "在目录ID下的相对路径，留空则保存到目录根",
+                                            "label": "保存子路径（可选）",
+                                            "placeholder": "例如：/国产剧",
+                                            "hint": "在解析路径下的子目录，留空则保存到目录根",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -374,6 +409,7 @@ class ClSearch(_PluginBase):
             "p115_cookie": "",
             "save_dir_id": "",
             "save_path": "",
+            "resolved_path": "",
             "use_mp_rename": False,
         }
 
@@ -690,6 +726,84 @@ class ClSearch(_PluginBase):
 
         success, msg = self._site_login()
         return {"success": success, "message": msg}
+
+    def _resolve_cid_path(self, cid: str) -> str:
+        """通过115 API递归查询CID对应的完整目录路径
+
+        Args:
+            cid: 115目录的CID
+
+        Returns:
+            完整路径字符串，如 "/影视/电视剧"，失败返回空字符串
+        """
+        if not cid or not self._p115_cookie:
+            return ""
+
+        try:
+            from p115client import P115Client
+
+            client = P115Client(self._p115_cookie)
+            path_parts = []
+            current_cid = cid
+
+            for _ in range(20):  # 最多向上查20层，防止死循环
+                if current_cid == "0" or not current_cid:
+                    break
+
+                # 尝试多种方式获取目录信息
+                info = None
+                get_info = (
+                    getattr(client, 'fs_info', None)
+                    or getattr(client, 'fs_file', None)
+                )
+                if get_info:
+                    info = get_info({"cid": current_cid})
+                else:
+                    # 回退到直接 API 调用
+                    info = client.request(
+                        "https://webapi.115.com/files",
+                        params={"cid": current_cid},
+                    )
+
+                if not info or not info.get("state"):
+                    break
+
+                data = info.get("data", {})
+                name = data.get("n") or data.get("name") or data.get("file_name") or ""
+                pid = str(data.get("pid") or data.get("p") or data.get("parent_id") or "0")
+
+                if name:
+                    path_parts.append(name)
+
+                if pid == "0" or pid == current_cid:
+                    break
+                current_cid = pid
+
+            path_parts.reverse()
+            return "/" + "/".join(path_parts) if path_parts else ""
+
+        except Exception as e:
+            logger.warning(f"CID路径解析异常: {e}")
+            return ""
+
+    def _api_resolve_cid(self, data: dict = None) -> dict:
+        """API: 通过CID解析115目录完整路径"""
+        if not self._enabled:
+            return {"success": False, "message": "插件未启用"}
+
+        if not self._p115_cookie:
+            return {"success": False, "message": "未配置115网盘Cookie"}
+
+        cid = (data or {}).get("cid") or self._save_dir_id
+        if not cid:
+            return {"success": False, "message": "请提供CID"}
+
+        resolved = self._resolve_cid_path(cid)
+        if resolved:
+            self._resolved_path = resolved
+            return {"success": True, "path": resolved}
+        else:
+            return {"success": False, "message": "未能解析CID路径，请检查Cookie和CID是否正确"}
 
     def _api_search(self, keyword: str = "", page: int = 1, search_type: str = "4") -> dict:
         """API: 搜索磁力资源
