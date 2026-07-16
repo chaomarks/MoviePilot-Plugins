@@ -635,7 +635,6 @@ class ClSearch(_PluginBase):
                 temp_session.headers.update(self._get_headers())
                 temp_session.get(self._site_url, timeout=30)
                 if self._solve_pow(temp_session):
-                    # 合并新Cookie（browser_verified）到现有Cookie，不覆盖app_auth
                     new_cookies = temp_session.cookies.get_dict()
                     if new_cookies:
                         existing = {}
@@ -654,7 +653,32 @@ class ClSearch(_PluginBase):
                     kwargs["headers"] = merged_headers
                     return requests.request(method, url, **kwargs)
 
+        # 检查是否 Session 过期（被重定向到登录页或返回登录页HTML）
+        if self._session and self._is_login_page(resp):
+            logger.info("Session已过期（检测到登录页），尝试自动重新登录...")
+            self._session = None
+            if self._site_username and self._site_password:
+                success, msg = self._site_login()
+                if success:
+                    logger.info("重新登录成功，重试请求")
+                    return self._session.request(method, url, **kwargs)
+                else:
+                    logger.error(f"重新登录失败: {msg}")
+
         return resp
+
+    @staticmethod
+    def _is_login_page(resp) -> bool:
+        """检测响应是否为登录页面"""
+        # 检查URL是否被重定向到登录页
+        if "/user/login" in resp.url:
+            return True
+        # 检查HTML中是否包含登录表单
+        text = resp.text[:2000] if resp.text else ""
+        if 'name="username"' in text or 'name="password"' in text:
+            if 'name="dosubmit"' in text or 'id="login"' in text.lower():
+                return True
+        return False
 
     def _api_login(self) -> dict:
         """API: 手动触发站点登录"""
