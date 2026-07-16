@@ -1059,17 +1059,32 @@ class ClSearch(_PluginBase):
         if event_data.get("action") != "clsearch":
             return
 
-        keyword = event_data.get("keyword") or ""
-        if keyword:
-            result = self._api_search(keyword)
-            if result.get("success") and result.get("data"):
-                self._send_search_results(keyword, result["data"])
-            else:
-                self.post_message(
-                    title="观影搜",
-                    content=result.get("message", "搜索失败"),
-                    notification_type=NotificationType.Warning,
-                )
+        # MoviePilot 将 /clsearch xxx 的参数放在 event_data["data"]["arg_str"]
+        keyword = (
+            event_data.get("data", {}).get("arg_str", "")
+            or event_data.get("arg_str", "")
+            or event_data.get("keyword", "")
+        ).strip()
+
+        logger.info(f"观影搜命令触发: keyword='{keyword}', event_data keys={list(event_data.keys())}")
+
+        if not keyword:
+            self.post_message(
+                title="观影搜",
+                content="请输入搜索关键词，例如: /clsearch 开端",
+                notification_type=NotificationType.Warning,
+            )
+            return
+
+        result = self._api_search(keyword)
+        if result.get("success") and result.get("data"):
+            self._send_search_results(keyword, result["data"])
+        else:
+            self.post_message(
+                title="观影搜",
+                content=result.get("message", "搜索失败"),
+                notification_type=NotificationType.Warning,
+            )
 
     def _send_search_results(self, keyword: str, results: List[dict]) -> None:
         """发送搜索结果通知"""
