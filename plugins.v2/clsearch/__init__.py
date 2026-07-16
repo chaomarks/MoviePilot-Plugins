@@ -9,16 +9,18 @@ import re
 import json
 import hashlib
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Type
 from urllib.parse import urljoin, quote
 
 import requests
+from pydantic import BaseModel, Field
 
 from app.core.event import Event, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
 from app.schemas.types import EventType
+from app.agent.tools.base import MoviePilotTool
 
 
 class ClSearch(_PluginBase):
@@ -1083,8 +1085,156 @@ class ClSearch(_PluginBase):
             notification_type=NotificationType.Information,
         )
 
+    def get_agent_tools(self) -> List[type]:
+        """获取插件智能体工具，供内置AI智能体调用"""
+        return [ClSearchSearchTool, ClSearchDetailTool, ClSearchOfflineTool]
+
     def stop_service(self) -> None:
         """停止插件服务"""
         self._search_cache.clear()
         self._session = None
         logger.info("观影搜插件服务已停止")
+
+
+# ==================== 智能体工具 ====================
+
+class ClSearchSearchInput(BaseModel):
+    """搜索工具入参模型"""
+    keyword: str = Field(..., description="要搜索的影视关键词，如'开端'、'流浪地球'")
+
+
+class ClSearchDetailInput(BaseModel):
+    """详情工具入参模型"""
+    detail_path: str = Field(..., description="搜索结果中的 detail_path 字段，如 '/bt/xxxxx'")
+
+
+class ClSearchOfflineInput(BaseModel):
+    """离线下载工具入参模型"""
+    magnet: str = Field(..., description="磁力链接，从详情工具返回的 magnet 字段获取")
+    title: str = Field(default="", description="资源标题，用于115离线下载的文件名")
+
+
+class ClSearchSearchTool(MoviePilotTool):
+    """搜索磁力资源工具"""
+    name: str = "cl_search_search"
+    description: str = (
+        "搜索影视磁力资源。输入关键词，返回搜索结果列表，包含标题、大小、做种数、更新时间"
+        "和 detail_path 字段。detail_path 可用于后续获取磁力链接详情。"
+    )
+    args_schema: Type[BaseModel] = ClSearchSearchInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        keyword = kwargs.get("keyword", "")
+        return f"正在搜索磁力资源：{keyword}"
+
+    async def run(self, keyword: str, **kwargs) -> str:
+        try:
+            from app.core.plugin import PluginManager
+            plugins = PluginManager().running_plugins
+            plugin = plugins.get("ClSearch")
+            if not plugin:
+                return "观影磁力搜插件未运行，请先启用插件并配置站点信息"
+
+            result = plugin._api_search(keyword=keyword)
+            if not result.get("success"):
+                return f"搜索失败: {result.get('message', '未知错误')}"
+
+            data = result.get("data", [])
+            if not data:
+                return f"未找到与 '{keyword}' 相关的磁力资源"
+
+            result_lines = [f"搜索 '{keyword}' 找到 {len(data)} 个资源:"]
+            for i, item in enumerate(data[:10], 1):
+                result_lines.append(
+                    f"\n{i}. {item['title']}\n"
+                    f"   大小: {item['size']} | 做种: {item['seeders']} | 更新: {item['update_time']}\n"
+                    f"   detail_path: {item['detail_path']}"
+                )
+
+            if len(data) > 10:
+                result_lines.append(f"\n... 还有 {len(data) - 10} 个结果未显示")
+
+            return "\n".join(result_lines)
+        except Exception as e:
+            return f"搜索失败: {str(e)}"
+
+
+class ClSearchDetailTool(MoviePilotTool):
+    """获取磁力资源详情工具"""
+    name: str = "cl_search_detail"
+    description: str = (
+        "获取磁力资源的详细信息，包括磁力链接(magnet)和种子下载链接(torrent_url)。"
+        "需要传入搜索结果的 detail_path 字段。"
+    )
+    args_schema: Type[BaseModel] = ClSearchDetailInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        return "正在获取磁力资源详情..."
+
+    async def run(self, detail_path: str, **kwargs) -> str:
+        try:
+            from app.core.plugin import PluginManager
+            plugins = PluginManager().running_plugins
+            plugin = plugins.get("ClSearch")
+            if not plugin:
+                return "观影磁力搜插件未运行"
+
+            result = plugin._api_detail(detail_path=detail_path)
+            if not result.get("success"):
+                return f"获取详情失败: {result.get('message', '未知错误')}"
+
+            data = result.get("data", {})
+            if not data:
+                return "详情数据为空"
+
+            lines = [
+                f"📄 {data.get('title', '未知标题')}",
+                f"\n🔗 磁力链接: {data.get('magnet', '无')}",
+            ]
+            if data.get("torrent_url"):
+                lines.append(f"⬇️ 种子下载: {data.get('torrent_url')}")
+
+            files = data.get("files", [])
+            if files:
+                lines.append(f"\n📁 文件列表 ({len(files)}个文件):")
+                for f in files[:5]:
+                    lines.append(f"  - {f}")
+                if len(files) > 5:
+                    lines.append(f"  ... 还有 {len(files) - 5} 个文件")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return f"获取详情失败: {str(e)}"
+
+
+class ClSearchOfflineTool(MoviePilotTool):
+    """115离线下载工具"""
+    name: str = "cl_search_offline"
+    description: str = (
+        "将磁力链接添加到115网盘离线下载。需要传入磁力链接(magnet)和资源标题(title)。"
+        "使用前请确保已在插件配置中填写115网盘Cookie和下载目录ID。"
+    )
+    args_schema: Type[BaseModel] = ClSearchOfflineInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        title = kwargs.get("title", "")
+        return f"正在将 '{title}' 添加到115离线下载..."
+
+    async def run(self, magnet: str, title: str = "", **kwargs) -> str:
+        try:
+            from app.core.plugin import PluginManager
+            plugins = PluginManager().running_plugins
+            plugin = plugins.get("ClSearch")
+            if not plugin:
+                return "观影磁力搜插件未运行"
+
+            result = plugin._api_offline_download(data={
+                "magnet": magnet,
+                "title": title,
+            })
+            if result.get("success"):
+                return f"✅ 已成功添加到115离线下载: {title}\n{result.get('message', '')}"
+            else:
+                return f"离线下载失败: {result.get('message', '未知错误')}"
+        except Exception as e:
+            return f"离线下载失败: {str(e)}"
