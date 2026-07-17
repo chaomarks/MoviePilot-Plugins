@@ -3,12 +3,12 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.3.1",
+    "version": "1.3.2",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
-      "v1.3.1": "解析路径改为手动输入，移除自动解析逻辑避免安装问题"
+      "v1.3.2": "用requests直调115 API实现自动解析路径，移除p115client依赖"
     }
   }
 }

@@ -34,7 +34,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.3.1"
+    plugin_version = "1.3.2"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -91,8 +91,20 @@ class ClSearch(_PluginBase):
         self._p115_cookie = str(config.get("p115_cookie") or "")
         self._save_dir_id = str(config.get("save_dir_id") or "")
         self._use_mp_rename = bool(config.get("use_mp_rename"))
-        # 从配置中读取手动输入的解析路径
+        # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
+
+        # CID 变更时自动解析路径并写回配置
+        if self._save_dir_id and self._p115_cookie and not self._resolved_path:
+            try:
+                resolved = self._resolve_cid_path(self._save_dir_id)
+                if resolved:
+                    self._resolved_path = resolved
+                    logger.info(f"CID {self._save_dir_id} 自动解析为: {resolved}")
+                    config["resolved_path"] = resolved
+                    self.update_config(config)
+            except Exception as e:
+                logger.warning(f"CID路径自动解析失败: {e}")
 
     def get_state(self) -> bool:
         """获取插件启用状态"""
@@ -339,7 +351,7 @@ class ClSearch(_PluginBase):
                                             "model": "save_dir_id",
                                             "label": "目录CID",
                                             "placeholder": "例如：2835669123456789",
-                                            "hint": "从115网盘地址栏获取19位数字",
+                                            "hint": "从115网盘地址栏获取19位数字，保存后自动解析完整路径",
                                             "persistent-hint": True,
                                             "density": "compact",
                                         },
@@ -358,7 +370,7 @@ class ClSearch(_PluginBase):
                                             "placeholder": "例如：/影视/电视剧",
                                             "variant": "outlined",
                                             "density": "compact",
-                                            "hint": "手动输入115目录CID对应的完整路径，也可通过API解析",
+                                            "hint": "保存后自动解析CID对应的完整路径，也可手动输入",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -824,60 +836,52 @@ class ClSearch(_PluginBase):
         return {"success": success, "message": msg}
 
     def _resolve_cid_path(self, cid: str) -> str:
-        """通过115 API递归查询CID对应的完整目录路径
+        """通过115官方API查询CID对应的完整目录路径
 
         Args:
             cid: 115目录的CID
 
         Returns:
-            完整路径字符串，如 "/影视/电视剧"，失败返回空字符串
+            完整路径字符串，如 "/云下载/需入库/临时/mp"，失败返回空字符串
         """
         if not cid or not self._p115_cookie:
             return ""
 
         try:
-            from p115client import P115Client
+            url = "https://webapi.115.com/files"
+            headers = {
+                "Cookie": self._p115_cookie,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://115.com/",
+            }
+            params = {
+                "aid": 1,
+                "cid": cid,
+                "show_dir": 1,
+                "limit": 10,
+            }
+            resp = requests.get(url, params=params, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
 
-            client = P115Client(self._p115_cookie)
-            path_parts = []
-            current_cid = cid
+            if not data.get("state"):
+                logger.warning(f"115 API返回错误: {data}")
+                return ""
 
-            for _ in range(20):  # 最多向上查20层，防止死循环
-                if current_cid == "0" or not current_cid:
-                    break
+            # 从 path 数组获取完整目录层级，如 [{"cid":"0","name":"根目录"},{"cid":"123","name":"云下载"},...]
+            path_list = data.get("path", []) if isinstance(data, dict) else []
+            if not path_list:
+                return ""
 
-                # 尝试多种方式获取目录信息
-                info = None
-                get_info = (
-                    getattr(client, 'fs_info', None)
-                    or getattr(client, 'fs_file', None)
-                )
-                if get_info:
-                    info = get_info({"cid": current_cid})
-                else:
-                    # 回退到直接 API 调用
-                    info = client.request(
-                        "https://webapi.115.com/files",
-                        params={"cid": current_cid},
-                    )
+            # 跳过第一项"根目录"，拼接完整路径
+            parts = [p.get("name", "") for p in path_list if p.get("name")]
+            if parts:
+                return "/" + "/".join(parts[1:] if parts[0] == "根目录" else parts)
+            return ""
 
-                if not info or not info.get("state"):
-                    break
-
-                data = info.get("data", {})
-                name = data.get("n") or data.get("name") or data.get("file_name") or ""
-                pid = str(data.get("pid") or data.get("p") or data.get("parent_id") or "0")
-
-                if name:
-                    path_parts.append(name)
-
-                if pid == "0" or pid == current_cid:
-                    break
-                current_cid = pid
-
-            path_parts.reverse()
-            return "/" + "/".join(path_parts) if path_parts else ""
-
+        except requests.RequestException as e:
+            logger.warning(f"CID路径解析HTTP请求失败: {e}")
+            return ""
         except Exception as e:
             logger.warning(f"CID路径解析异常: {e}")
             return ""
@@ -1147,21 +1151,23 @@ class ClSearch(_PluginBase):
             return {"success": False, "message": "请提供有效的磁力链接"}
 
         try:
-            from p115client import P115Client
-
-            # 创建115客户端
-            client = P115Client(self._p115_cookie)
-
-            # 构建离线下载参数
-            params = {
+            url = "https://webapi.115.com/cloud_download/add_task_url"
+            headers = {
+                "Cookie": self._p115_cookie,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://115.com/",
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
+            payload = {
                 "url": magnet,
                 "wp_path_id": self._save_dir_id,
             }
 
             logger.info(f"添加115离线下载: {title}")
 
-            # 调用离线下载API
-            result = client.clouddownload_task_add_url(params)
+            resp = requests.post(url, data=payload, headers=headers, timeout=60)
+            resp.raise_for_status()
+            result = resp.json()
 
             if result and result.get("state"):
                 logger.info(f"115离线下载添加成功: {title}")
@@ -1181,8 +1187,6 @@ class ClSearch(_PluginBase):
                     "data": result,
                 }
 
-        except ImportError:
-            return {"success": False, "message": "p115client未安装，请先安装依赖"}
         except Exception as e:
             logger.error(f"115离线下载异常: {e}")
             return {"success": False, "message": f"下载异常: {str(e)}"}
