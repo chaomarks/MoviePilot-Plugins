@@ -54,7 +54,6 @@ class ClSearch(_PluginBase):
     _site_password = ""
     _p115_cookie = ""
     _save_dir_id = ""
-    _save_path = ""
     _use_mp_rename = False
     _resolved_path = ""  # CID 解析出的完整路径
 
@@ -78,7 +77,6 @@ class ClSearch(_PluginBase):
         self._site_password = ""
         self._p115_cookie = ""
         self._save_dir_id = ""
-        self._save_path = ""
         self._use_mp_rename = False
         self._resolved_path = ""
         self._session = None
@@ -92,7 +90,6 @@ class ClSearch(_PluginBase):
         self._site_password = str(config.get("site_password") or "")
         self._p115_cookie = str(config.get("p115_cookie") or "")
         self._save_dir_id = str(config.get("save_dir_id") or "")
-        self._save_path = str(config.get("save_path") or "")
         self._use_mp_rename = bool(config.get("use_mp_rename"))
 
         # CID 变更时自动解析路径
@@ -242,13 +239,13 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
-                    # 站点地址
+                    # 站点地址 + 用户名 + 密码
                     {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -256,28 +253,22 @@ class ClSearch(_PluginBase):
                                             "model": "site_url",
                                             "label": "站点地址",
                                             "placeholder": "https://www.example.com",
-                                            "hint": "影视资源站点的基础URL，不含末尾斜杠",
+                                            "hint": "资源站点URL，不含末尾斜杠",
                                             "persistent-hint": True,
                                         },
                                     }
                                 ],
                             },
-                        ],
-                    },
-                    # 站点用户名
-                    {
-                        "component": "VRow",
-                        "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "site_username",
-                                            "label": "站点用户名",
-                                            "placeholder": "输入站点登录用户名",
+                                            "label": "用户名",
+                                            "placeholder": "站点登录用户名",
                                             "hint": "支持用户名或邮箱登录",
                                             "persistent-hint": True,
                                         },
@@ -286,16 +277,16 @@ class ClSearch(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "site_password",
-                                            "label": "站点密码",
-                                            "placeholder": "输入站点登录密码",
+                                            "label": "密码",
+                                            "placeholder": "站点登录密码",
                                             "type": "password",
-                                            "hint": "密码仅用于自动登录，保存在本地配置中",
+                                            "hint": "密码保存在本地配置中",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -401,29 +392,9 @@ class ClSearch(_PluginBase):
                                             "model": "resolved_path",
                                             "label": "解析路径",
                                             "readonly": True,
-                                            "hint": "CID自动解析出的完整路径（如 /影视/电视剧），保存后自动填充",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    # 保存子路径
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "save_path",
-                                            "label": "保存子路径（可选）",
-                                            "placeholder": "例如：国产剧",
-                                            "hint": "在解析路径下的子目录，留空则保存到目录根。注意：需要先创建好目录",
+                                            "variant": "outlined",
+                                            "density": "compact",
+                                            "hint": "CID自动解析出的完整路径，保存后自动填充",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -440,7 +411,6 @@ class ClSearch(_PluginBase):
             "site_password": "",
             "p115_cookie": "",
             "save_dir_id": "",
-            "save_path": "",
             "resolved_path": "",
             "use_mp_rename": False,
         }
@@ -1221,7 +1191,6 @@ class ClSearch(_PluginBase):
             # 构建离线下载参数
             params = {
                 "url": magnet,
-                "savepath": self._save_path or "",
                 "wp_path_id": self._save_dir_id,
             }
 
