@@ -3,13 +3,12 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.2.9",
+    "version": "1.3.0",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
-      "v1.2.9": "修复保存后解析路径不显示的问题（init_plugin未读取配置）",
-      "v1.2.8": "115配置合并为一行，保存后自动解析CID路径"
+      "v1.3.0": "修复安装依赖缺失导致CID路径解析失败的问题"
     }
   }
 }
