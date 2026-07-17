@@ -34,7 +34,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.2.8"
+    plugin_version = "1.2.9"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -91,6 +91,8 @@ class ClSearch(_PluginBase):
         self._p115_cookie = str(config.get("p115_cookie") or "")
         self._save_dir_id = str(config.get("save_dir_id") or "")
         self._use_mp_rename = bool(config.get("use_mp_rename"))
+        # 从配置中读取之前保存的解析路径，避免保存后刷新时消失
+        self._resolved_path = str(config.get("resolved_path") or "")
 
         # CID 变更时自动解析路径并写回配置，使解析结果在表单中显示
         if self._save_dir_id and self._p115_cookie:
