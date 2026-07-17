@@ -34,7 +34,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.3.0"
+    plugin_version = "1.3.1"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -91,21 +91,8 @@ class ClSearch(_PluginBase):
         self._p115_cookie = str(config.get("p115_cookie") or "")
         self._save_dir_id = str(config.get("save_dir_id") or "")
         self._use_mp_rename = bool(config.get("use_mp_rename"))
-        # 从配置中读取之前保存的解析路径，避免保存后刷新时消失
+        # 从配置中读取手动输入的解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
-
-        # CID 变更时自动解析路径并写回配置，使解析结果在表单中显示
-        if self._save_dir_id and self._p115_cookie:
-            try:
-                resolved = self._resolve_cid_path(self._save_dir_id)
-                if resolved:
-                    self._resolved_path = resolved
-                    logger.info(f"CID {self._save_dir_id} 解析为: {resolved}")
-                    # 更新配置持久化，使解析路径显示在表单的"解析路径"字段中
-                    config["resolved_path"] = resolved
-                    self.update_config(config)
-            except Exception as e:
-                logger.warning(f"CID路径解析失败: {e}")
 
     def get_state(self) -> bool:
         """获取插件启用状态"""
@@ -352,7 +339,7 @@ class ClSearch(_PluginBase):
                                             "model": "save_dir_id",
                                             "label": "目录CID",
                                             "placeholder": "例如：2835669123456789",
-                                            "hint": "从115网盘地址栏获取19位数字，保存后自动解析路径",
+                                            "hint": "从115网盘地址栏获取19位数字",
                                             "persistent-hint": True,
                                             "density": "compact",
                                         },
@@ -368,10 +355,10 @@ class ClSearch(_PluginBase):
                                         "props": {
                                             "model": "resolved_path",
                                             "label": "解析路径",
-                                            "readonly": True,
+                                            "placeholder": "例如：/影视/电视剧",
                                             "variant": "outlined",
                                             "density": "compact",
-                                            "hint": "保存后自动解析CID对应的完整路径",
+                                            "hint": "手动输入115目录CID对应的完整路径，也可通过API解析",
                                             "persistent-hint": True,
                                         },
                                     }
