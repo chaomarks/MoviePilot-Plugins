@@ -35,7 +35,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.2"
+    plugin_version = "1.4.3"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1265,7 +1265,7 @@ class ClSearch(_PluginBase):
 
     def get_agent_tools(self) -> List[type]:
         """获取插件智能体工具，供内置AI智能体调用"""
-        return [ClSearchSearchTool, ClSearchDetailTool, ClSearchOfflineTool]
+        return [ClSearchSearchTool, ClSearchOfflineResultTool, ClSearchDetailTool, ClSearchOfflineTool]
 
     def stop_service(self) -> None:
         """停止插件服务"""
@@ -1290,6 +1290,14 @@ class ClSearchOfflineInput(BaseModel):
     """离线下载工具入参模型"""
     magnet: str = Field(..., description="磁力链接，从详情工具返回的 magnet 字段获取")
     title: str = Field(default="", description="资源标题，用于115离线下载的文件名")
+
+
+class ClSearchOfflineResultInput(BaseModel):
+    """搜索结果一键离线工具入参模型"""
+    keyword: str = Field(default="", description="搜索关键词，如用户刚搜索的影视名称；detail_path 为空时必填")
+    index: int = Field(default=1, description="搜索结果序号，从1开始，例如用户说第二个就传2")
+    detail_path: str = Field(default="", description="搜索结果中的 detail_path 字段；有该字段时优先使用")
+    search_type: str = Field(default="4", description="搜索类型，默认4=种子")
 
 
 class ClSearchSearchTool(MoviePilotTool):
@@ -1383,6 +1391,69 @@ class ClSearchDetailTool(MoviePilotTool):
             return "\n".join(lines)
         except Exception as e:
             return f"获取详情失败: {str(e)}"
+
+
+class ClSearchOfflineResultTool(MoviePilotTool):
+    """按搜索结果直接添加115离线下载工具"""
+    name: str = "cl_search_offline_result"
+    description: str = (
+        "将搜索结果直接添加到115网盘离线下载。可传 detail_path 直接下载某条搜索结果；"
+        "也可传 keyword 和 index，工具会先搜索并选择对应序号，再获取磁力链接并添加离线。"
+        "适合用户说'第二个离线到115'、'下载第3个'这类连续操作。"
+    )
+    args_schema: Type[BaseModel] = ClSearchOfflineResultInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        detail_path = kwargs.get("detail_path") or ""
+        keyword = kwargs.get("keyword") or ""
+        index = kwargs.get("index") or 1
+        if detail_path:
+            return "正在获取资源详情并添加到115离线下载..."
+        return f"正在将 '{keyword}' 的第 {index} 个搜索结果添加到115离线下载..."
+
+    async def run(self, keyword: str = "", index: int = 1, detail_path: str = "", search_type: str = "4", **kwargs) -> str:
+        try:
+            from app.core.plugin import PluginManager
+            plugins = PluginManager().running_plugins
+            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            if not plugin:
+                return "观影磁力搜插件未运行"
+
+            selected_title = ""
+            if not detail_path:
+                if not keyword:
+                    return "离线下载失败: 请提供搜索关键词或 detail_path"
+                search_result = plugin._api_search(keyword=keyword, search_type=search_type)
+                if not search_result.get("success"):
+                    return f"搜索失败: {search_result.get('message', '未知错误')}"
+                items = search_result.get("data") or []
+                if not items:
+                    return f"未找到与 '{keyword}' 相关的磁力资源"
+                if index < 1 or index > len(items):
+                    return f"离线下载失败: 搜索结果序号 {index} 超出范围，共 {len(items)} 个结果"
+                selected = items[index - 1]
+                detail_path = selected.get("detail_path") or ""
+                selected_title = selected.get("title") or ""
+
+            detail_result = plugin._api_detail(detail_path=detail_path)
+            if not detail_result.get("success"):
+                return f"获取详情失败: {detail_result.get('message', '未知错误')}"
+
+            detail = detail_result.get("data") or {}
+            magnet = detail.get("magnet") or ""
+            title = detail.get("title") or selected_title
+            if not magnet:
+                return f"离线下载失败: 未解析到磁力链接，资源: {title or detail_path}"
+
+            offline_result = plugin._api_offline_download(data={
+                "magnet": magnet,
+                "title": title,
+            })
+            if offline_result.get("success"):
+                return f"已成功添加到115离线下载: {title}\n{offline_result.get('message', '')}"
+            return f"离线下载失败: {offline_result.get('message', '未知错误')}"
+        except Exception as e:
+            return f"离线下载失败: {str(e)}"
 
 
 class ClSearchOfflineTool(MoviePilotTool):
