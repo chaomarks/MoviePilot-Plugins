@@ -73,6 +73,8 @@ class ClSearch(_PluginBase):
         self._site_cookie = ""
         self._site_username = ""
         self._site_password = ""
+        self._p115_cookie = ""
+        self._save_dir_id = ""
         self._session = None
 
         if not config:
@@ -82,6 +84,8 @@ class ClSearch(_PluginBase):
         self._site_url = str(config.get("site_url") or "").rstrip("/")
         self._site_username = str(config.get("site_username") or "")
         self._site_password = str(config.get("site_password") or "")
+        self._p115_cookie = str(config.get("p115_cookie") or "")
+        self._save_dir_id = str(config.get("save_dir_id") or "")
 
     def get_state(self) -> bool:
         """获取插件启用状态"""
@@ -136,7 +140,7 @@ class ClSearch(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """返回插件配置表单与默认配置"""
-        return [
+        return (
             {
                 "component": "VForm",
                 "props": {"model": "form"},
@@ -318,11 +322,13 @@ class ClSearch(_PluginBase):
                     },
                 ],
             }
-        ], {
+        ), {
             "enabled": False,
             "site_url": "",
             "site_username": "",
             "site_password": "",
+            "p115_cookie": "",
+            "save_dir_id": "",
         }
 
     def get_page(self) -> List[dict]:
