@@ -140,7 +140,7 @@ class ClSearch(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """返回插件配置表单与默认配置"""
-        return (
+        return [
             {
                 "component": "VForm",
                 "props": {"model": "form"},
@@ -322,7 +322,7 @@ class ClSearch(_PluginBase):
                     },
                 ],
             }
-        ), {
+        ], {
             "enabled": False,
             "site_url": "",
             "site_username": "",
