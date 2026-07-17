@@ -769,10 +769,6 @@ class ClSearch(_PluginBase):
         success, msg = self._site_login()
         return {"success": success, "message": msg}
 
-            logger.warning(f"CID路径解析异常: {e}")
-        else:
-            return {"success": False, "message": "未能解析CID路径，请检查Cookie和CID是否正确"}
-
     def _api_search(self, keyword: str = "", page: int = 1, search_type: str = "4") -> dict:
         """API: 搜索磁力资源
 
