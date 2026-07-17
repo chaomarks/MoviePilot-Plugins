@@ -34,7 +34,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.2.7"
+    plugin_version = "1.2.8"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -92,13 +92,16 @@ class ClSearch(_PluginBase):
         self._save_dir_id = str(config.get("save_dir_id") or "")
         self._use_mp_rename = bool(config.get("use_mp_rename"))
 
-        # CID 变更时自动解析路径
+        # CID 变更时自动解析路径并写回配置，使解析结果在表单中显示
         if self._save_dir_id and self._p115_cookie:
             try:
                 resolved = self._resolve_cid_path(self._save_dir_id)
                 if resolved:
                     self._resolved_path = resolved
                     logger.info(f"CID {self._save_dir_id} 解析为: {resolved}")
+                    # 更新配置持久化，使解析路径显示在表单的"解析路径"字段中
+                    config["resolved_path"] = resolved
+                    self.update_config(config)
             except Exception as e:
                 logger.warning(f"CID路径解析失败: {e}")
 
@@ -316,59 +319,30 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
-                    # 115网盘Cookie
+                    # 115网盘配置（一行：Cookie + CID + 解析路径）
                     {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
-                                        "component": "VTextarea",
+                                        "component": "VTextField",
                                         "props": {
                                             "model": "p115_cookie",
                                             "label": "115网盘Cookie",
-                                            "placeholder": "输入115网盘的Cookie",
-                                            "hint": "用于115离线下载的认证Cookie，建议粘贴完整的Cookie字符串",
+                                            "placeholder": "粘贴115网盘Cookie",
+                                            "hint": "用于115离线下载的认证Cookie",
                                             "persistent-hint": True,
-                                            "rows": 3,
-                                            "variant": "outlined",
                                             "density": "compact",
                                         },
                                     }
                                 ],
                             },
-                        ],
-                    },
-                    # 离线下载目录
-                    {
-                        "component": "VRow",
-                        "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "info",
-                                            "variant": "tonal",
-                                            "density": "compact",
-                                            "class": "mb-2",
-                                        },
-                                        "text": "填入115网盘目标目录的CID，保存后自动解析为完整路径显示在右侧。",
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -376,15 +350,16 @@ class ClSearch(_PluginBase):
                                             "model": "save_dir_id",
                                             "label": "目录CID",
                                             "placeholder": "例如：2835669123456789",
-                                            "hint": "从115网盘网页地址栏获取，格式为19位数字",
+                                            "hint": "从115网盘地址栏获取19位数字，保存后自动解析路径",
                                             "persistent-hint": True,
+                                            "density": "compact",
                                         },
                                     }
                                 ],
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -394,7 +369,7 @@ class ClSearch(_PluginBase):
                                             "readonly": True,
                                             "variant": "outlined",
                                             "density": "compact",
-                                            "hint": "CID自动解析出的完整路径，保存后自动填充",
+                                            "hint": "保存后自动解析CID对应的完整路径",
                                             "persistent-hint": True,
                                         },
                                     }
