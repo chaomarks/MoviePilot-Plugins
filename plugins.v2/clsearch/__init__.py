@@ -35,7 +35,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.1"
+    plugin_version = "1.4.2"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -84,11 +84,11 @@ class ClSearch(_PluginBase):
             return
 
         self._enabled = bool(config.get("enabled"))
-        self._site_url = str(config.get("site_url") or "").rstrip("/")
-        self._site_username = str(config.get("site_username") or "")
-        self._site_password = str(config.get("site_password") or "")
-        self._p115_cookie = str(config.get("p115_cookie") or "")
-        self._save_dir_id = str(config.get("save_dir_id") or "")
+        self._site_url = str(config.get("site_url") or "").strip().rstrip("/")
+        self._site_username = str(config.get("site_username") or "").strip()
+        self._site_password = str(config.get("site_password") or "").strip()
+        self._p115_cookie = self._normalize_cookie(config.get("p115_cookie") or "")
+        self._save_dir_id = str(config.get("save_dir_id") or "").strip()
         # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
 
@@ -127,35 +127,35 @@ class ClSearch(_PluginBase):
         """返回插件API列表"""
         return [
             {
-                "path": "search",
+                "path": "/ClSearch/search",
                 "endpoint": self._api_search,
                 "methods": ["GET", "POST"],
                 "auth": "bear",
                 "summary": "搜索磁力资源",
             },
             {
-                "path": "detail",
+                "path": "/ClSearch/detail",
                 "endpoint": self._api_detail,
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "获取资源详情和磁力链接",
             },
             {
-                "path": "offline",
+                "path": "/ClSearch/offline",
                 "endpoint": self._api_offline_download,
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "添加115离线下载",
             },
             {
-                "path": "login",
+                "path": "/ClSearch/login",
                 "endpoint": self._api_login,
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "账号密码登录站点",
             },
             {
-                "path": "resolve_cid",
+                "path": "/ClSearch/resolve_cid",
                 "endpoint": self._api_resolve_cid,
                 "methods": ["POST"],
                 "auth": "bear",
@@ -691,8 +691,15 @@ class ClSearch(_PluginBase):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         }
         if self._site_cookie:
-            headers["Cookie"] = self._site_cookie
+            headers["Cookie"] = self._normalize_cookie(self._site_cookie)
         return headers
+
+    @staticmethod
+    def _normalize_cookie(cookie: str) -> str:
+        """清理复制 Cookie 时带入的首尾空白和换行，避免非法 Header。"""
+        if not cookie:
+            return ""
+        return " ".join(str(cookie).replace("\r", " ").replace("\n", " ").split()).strip()
 
     def _do_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """发起HTTP请求（简单版，不处理PoW）"""
@@ -832,9 +839,10 @@ class ClSearch(_PluginBase):
             return ""
 
         try:
+            p115_cookie = self._normalize_cookie(self._p115_cookie)
             url = "https://webapi.115.com/files"
             headers = {
-                "Cookie": self._p115_cookie,
+                "Cookie": p115_cookie,
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://115.com/",
             }
@@ -1135,9 +1143,10 @@ class ClSearch(_PluginBase):
             return {"success": False, "message": "请提供有效的磁力链接"}
 
         try:
+            p115_cookie = self._normalize_cookie(self._p115_cookie)
             url = "https://115.com/?ct=offline&ac=add_url"
             headers = {
-                "Cookie": self._p115_cookie,
+                "Cookie": p115_cookie,
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://115.com/",
                 "Content-Type": "application/x-www-form-urlencoded",
