@@ -10,7 +10,6 @@ import json
 import hashlib
 import threading
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 from urllib.parse import urljoin, quote
 
@@ -36,7 +35,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.0"
+    plugin_version = "1.4.1"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -56,7 +55,6 @@ class ClSearch(_PluginBase):
     _site_password = ""
     _p115_cookie = ""
     _save_dir_id = ""
-    _use_mp_rename = False
     _resolved_path = ""  # CID 解析出的完整路径
 
     # 搜索 & 离线历史记录
@@ -79,7 +77,6 @@ class ClSearch(_PluginBase):
         self._site_password = ""
         self._p115_cookie = ""
         self._save_dir_id = ""
-        self._use_mp_rename = False
         self._resolved_path = ""
         self._session = None
 
@@ -92,7 +89,6 @@ class ClSearch(_PluginBase):
         self._site_password = str(config.get("site_password") or "")
         self._p115_cookie = str(config.get("p115_cookie") or "")
         self._save_dir_id = str(config.get("save_dir_id") or "")
-        self._use_mp_rename = bool(config.get("use_mp_rename"))
         # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
 
@@ -165,13 +161,6 @@ class ClSearch(_PluginBase):
                 "auth": "bear",
                 "summary": "通过CID解析115目录完整路径",
             },
-            {
-                "path": "mp_rename",
-                "endpoint": self._api_mp_rename,
-                "methods": ["POST"],
-                "auth": "bear",
-                "summary": "触发MP重命名整理，识别媒体文件并移动到目标目录",
-            },
         ]
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
@@ -194,21 +183,6 @@ class ClSearch(_PluginBase):
                                         "props": {
                                             "model": "enabled",
                                             "label": "启用插件",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "use_mp_rename",
-                                            "label": "启用115重命名整理",
-                                            "hint": "启用后可通过API触发整理：识别媒体文件、按MP规范重命名、自动移到分类目录",
-                                            "persistent-hint": True,
                                         },
                                     }
                                 ],
@@ -399,7 +373,6 @@ class ClSearch(_PluginBase):
             "p115_cookie": "",
             "save_dir_id": "",
             "resolved_path": "",
-            "use_mp_rename": False,
         }
 
     def get_page(self) -> List[dict]:
@@ -1137,399 +1110,6 @@ class ClSearch(_PluginBase):
             logger.error(f"解析详情页面失败: {e}")
             return None
 
-    # ==================== 115 API 操作（Bearer Token 认证） ====================
-
-    def _get_115_access_token(self) -> Optional[str]:
-        """从MP Storages配置中读取115网盘的access_token"""
-        try:
-            from app.db.systemconfig import SystemConfig
-            sc = SystemConfig()
-            storages = sc.get("Storages")
-            if not storages:
-                logger.warning("未找到Storages配置")
-                return None
-
-            if isinstance(storages, str):
-                storages = json.loads(storages)
-
-            for storage in storages or []:
-                if isinstance(storage, dict) and storage.get("type") == "u115":
-                    cfg = storage.get("config", {})
-                    token = cfg.get("access_token")
-                    if token:
-                        logger.info("成功读取115 access_token")
-                        return token
-                    logger.warning("u115存储配置中未找到access_token")
-                    return None
-
-            logger.warning("未找到u115类型的存储配置")
-            return None
-        except Exception as e:
-            logger.error(f"读取115 access_token失败: {e}")
-            return None
-
-    def _115_headers(self, access_token: str) -> dict:
-        """构建115 Bearer Token请求头"""
-        return {
-            "Authorization": f"Bearer {access_token}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://115.com/",
-        }
-
-    def _115_list_files(self, cid: str, access_token: str) -> list:
-        """列出115目录下的文件（含子目录）
-        
-        Args:
-            cid: 目录CID
-            access_token: Bearer token
-            
-        Returns:
-            文件/目录列表，每个元素为dict，包含 fid, cid, n(文件名), s(大小), t(类型)等
-        """
-        try:
-            headers = self._115_headers(access_token)
-            headers["Accept"] = "application/json"
-            resp = requests.get(
-                f"https://webapi.115.com/files?aid=1&cid={cid}&show_dir=1&limit=300",
-                headers=headers,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("state"):
-                return data.get("data", [])
-            logger.warning(f"115列目录API返回错误: {data}")
-            return []
-        except Exception as e:
-            logger.error(f"115列目录失败: {e}")
-            return []
-
-    def _115_rename(self, fid: str, new_name: str, access_token: str) -> bool:
-        """重命名115文件"""
-        try:
-            headers = self._115_headers(access_token)
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-            resp = requests.post(
-                "https://webapi.115.com/files/rename",
-                headers=headers,
-                data={"fid": fid, "n": new_name},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("state"):
-                return True
-            logger.warning(f"115重命名失败: {result}")
-            return False
-        except Exception as e:
-            logger.error(f"115重命名异常: {e}")
-            return False
-
-    def _115_move(self, fid: str, target_pid: str, access_token: str) -> bool:
-        """移动115文件到目标目录"""
-        try:
-            headers = self._115_headers(access_token)
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-            resp = requests.post(
-                "https://webapi.115.com/files/move",
-                headers=headers,
-                data={"fid": fid, "pid": target_pid},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("state"):
-                return True
-            logger.warning(f"115移动失败: {result}")
-            return False
-        except Exception as e:
-            logger.error(f"115移动异常: {e}")
-            return False
-
-    def _115_create_dir(self, parent_id: str, dir_name: str, access_token: str) -> Optional[str]:
-        """在115创建目录，返回新目录的cid"""
-        try:
-            headers = self._115_headers(access_token)
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-            resp = requests.post(
-                "https://webapi.115.com/files/add",
-                headers=headers,
-                data={"pid": parent_id, "cname": dir_name},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("state"):
-                return str(data.get("cid", ""))
-            logger.warning(f"115创建目录失败: {data}")
-            return None
-        except Exception as e:
-            logger.error(f"115创建目录异常: {e}")
-            return None
-
-    # ==================== MP 重命名整理流程 ====================
-
-    MEDIA_EXTENSIONS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".mov", ".wmv",
-                        ".flv", ".webm", ".rmvb", ".m4v", ".iso", ".bdmv"}
-
-    def _is_media_file(self, filename: str) -> bool:
-        """判断是否为媒体文件"""
-        ext = Path(filename).suffix.lower()
-        return ext in self.MEDIA_EXTENSIONS
-
-    def _identify_media(self, title: str) -> Optional[dict]:
-        """使用MP内置识别服务识别媒体
-        
-        Args:
-            title: 文件名或标题
-            
-        Returns:
-            识别结果，包含 tmdb_id, media_type, name, year 等
-        """
-        try:
-            from app.media import MediaService
-            media = MediaService()
-            # 识别媒体
-            result = media.recognize_media(title)
-            if result:
-                return {
-                    "tmdb_id": result.tmdb_id,
-                    "media_type": result.type.value if result.type else None,
-                    "name": result.title,
-                    "year": result.year,
-                    "season": result.season,
-                    "episode": result.episode,
-                }
-            return None
-        except ImportError:
-            logger.warning("MediaService不可用，尝试通过Chain识别")
-        except Exception as e:
-            logger.warning(f"MediaService识别失败: {e}")
-
-        try:
-            from app.chain import Chain
-            chain = Chain()
-            result = chain.recognize_media(title)
-            if result:
-                return {
-                    "tmdb_id": result.tmdb_id,
-                    "media_type": result.type.value if result.type else None,
-                    "name": result.title,
-                    "year": result.year,
-                    "season": result.season,
-                    "episode": result.episode,
-                }
-            return None
-        except Exception as e:
-            logger.warning(f"Chain识别失败: {e}")
-
-        return None
-
-    def _generate_media_name(self, media_info: dict, original_name: str) -> str:
-        """按MP命名规则生成媒体文件名
-        
-        Args:
-            media_info: 媒体识别结果
-            original_name: 原始文件名，用于保留扩展名
-            
-        Returns:
-            格式化后的文件名
-        """
-        ext = Path(original_name).suffix
-        name = media_info.get("name", "") or ""
-        year = media_info.get("year")
-        season = media_info.get("season")
-        episode = media_info.get("episode")
-        media_type = media_info.get("media_type")
-
-        if media_type == "TV" and season is not None:
-            if episode is not None:
-                # 单集: 剧名 S01E01
-                return f"{name} S{int(season):02d}E{int(episode):02d}{ext}"
-            else:
-                # 整季: 剧名 S01
-                return f"{name} S{int(season):02d}{ext}"
-        elif year:
-            return f"{name} ({year}){ext}"
-        else:
-            return f"{name}{ext}"
-
-    def _build_target_tree(self, media_info: dict, access_token: str) -> Optional[str]:
-        """在目标目录下创建媒体分类目录结构
-        
-        Args:
-            media_info: 媒体识别结果
-            access_token: 115 token
-            
-        Returns:
-            目标目录cid，失败返回None
-        """
-        if not self._save_dir_id:
-            return None
-
-        media_type = media_info.get("media_type", "")
-        name = media_info.get("name", "") or ""
-        year = media_info.get("year")
-        season = media_info.get("season")
-
-        # 构建目录层级
-        if media_type == "TV":
-            category = "电视剧"
-        elif media_type == "Movie":
-            category = "电影"
-        else:
-            category = "其他"
-
-        # 创建分类目录
-        cat_cid = self._115_create_dir(self._save_dir_id, category, access_token)
-        if not cat_cid:
-            cat_cid = self._save_dir_id
-
-        # 创建媒体名称目录
-        if year:
-            media_dir = f"{name} ({year})"
-        else:
-            media_dir = name
-
-        media_cid = self._115_create_dir(cat_cid, media_dir, access_token)
-        if not media_cid:
-            return cat_cid
-
-        # 剧集创建季目录
-        if media_type == "TV" and season is not None:
-            season_dir = f"Season {int(season):02d}"
-            season_cid = self._115_create_dir(media_cid, season_dir, access_token)
-            if season_cid:
-                return season_cid
-
-        return media_cid
-
-    def _process_mp_rename(self) -> dict:
-        """执行MP重命名整理流程
-        
-        1. 从Storages读取115 access_token
-        2. 列出离线目录下的文件
-        3. 识别媒体文件
-        4. 重命名并移动到目标目录
-        
-        Returns:
-            处理结果
-        """
-        if not self._enabled:
-            return {"success": False, "message": "插件未启用"}
-
-        if not self._use_mp_rename:
-            return {"success": False, "message": "未启用MP重命名整理功能"}
-
-        if not self._save_dir_id:
-            return {"success": False, "message": "未配置离线下载目录CID"}
-
-        # 1. 获取 access_token
-        access_token = self._get_115_access_token()
-        if not access_token:
-            return {"success": False, "message": "无法获取115 access_token，请先在MP存储配置中添加115网盘"}
-
-        # 2. 列出离线目录下的文件
-        logger.info("开始MP重命名整理流程，列出离线目录文件...")
-        files = self._115_list_files(self._save_dir_id, access_token)
-        if not files:
-            return {"success": True, "message": "离线目录为空，无需整理", "processed": 0}
-
-        # 3. 筛选媒体文件
-        media_files = [f for f in files if self._is_media_file(f.get("n", ""))]
-        if not media_files:
-            return {"success": True, "message": "未找到媒体文件，无需整理", "processed": 0}
-
-        logger.info(f"找到 {len(media_files)} 个媒体文件，开始识别...")
-
-        processed = 0
-        errors = []
-        results = []
-
-        for file in media_files:
-            fid = file.get("fid") or file.get("ico", "")
-            filename = file.get("n", "")
-            file_cid = str(file.get("cid", ""))
-
-            if not fid:
-                continue
-
-            try:
-                logger.info(f"识别媒体文件: {filename}")
-
-                # 4. 识别媒体
-                media_info = self._identify_media(filename)
-                if not media_info:
-                    logger.warning(f"无法识别媒体: {filename}")
-                    errors.append(f"{filename}: 无法识别媒体")
-                    continue
-
-                # 5. 生成规范文件名
-                new_name = self._generate_media_name(media_info, filename)
-                logger.info(f"媒体识别结果: {media_info.get('name')} ({media_info.get('year')}) -> {new_name}")
-
-                # 6. 创建目标目录结构
-                target_cid = self._build_target_tree(media_info, access_token)
-                if not target_cid:
-                    errors.append(f"{filename}: 创建目标目录失败")
-                    continue
-
-                # 7. 重命名文件
-                if new_name != filename:
-                    if not self._115_rename(fid, new_name, access_token):
-                        logger.warning(f"重命名失败: {filename} -> {new_name}")
-                        errors.append(f"{filename}: 重命名失败")
-                        continue
-                    logger.info(f"重命名成功: {filename} -> {new_name}")
-
-                # 8. 移动文件到目标目录
-                if file_cid and file_cid != target_cid:
-                    # 移动后fid会变，需要用重命名后的新fid
-                    rename_fid = fid  # 重命名后fid不变
-                    if not self._115_move(rename_fid, target_cid, access_token):
-                        logger.warning(f"移动失败: {new_name} -> {target_cid}")
-                        errors.append(f"{new_name}: 移动失败")
-                        continue
-                    logger.info(f"移动成功: {new_name} -> 目标目录")
-
-                processed += 1
-                results.append({
-                    "original": filename,
-                    "renamed": new_name if new_name != filename else filename,
-                    "media": media_info.get("name"),
-                    "year": media_info.get("year"),
-                })
-
-            except Exception as e:
-                logger.error(f"处理文件失败: {filename}, 错误: {e}")
-                errors.append(f"{filename}: {str(e)}")
-
-        # 9. 发送通知
-        summary = f"MP重命名整理完成: 处理 {processed}/{len(media_files)} 个文件"
-        if errors:
-            summary += f", {len(errors)} 个失败"
-        logger.info(summary)
-
-        if processed > 0:
-            self.post_message(
-                title="观影磁力搜 - 整理完成",
-                content=summary,
-                notification_type=NotificationType.Information,
-            )
-
-        return {
-            "success": True,
-            "message": summary,
-            "processed": processed,
-            "total": len(media_files),
-            "errors": errors[:10],
-            "results": results,
-        }
-
-    def _api_mp_rename(self) -> dict:
-        """API: 触发MP重命名整理"""
-        return self._process_mp_rename()
-
     def _api_offline_download(self, data: dict = None) -> dict:
         """API: 添加115离线下载
 
@@ -1555,7 +1135,7 @@ class ClSearch(_PluginBase):
             return {"success": False, "message": "请提供有效的磁力链接"}
 
         try:
-            url = "https://webapi.115.com/cloud_download/add_task_url"
+            url = "https://115.com/?ct=offline&ac=add_url"
             headers = {
                 "Cookie": self._p115_cookie,
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

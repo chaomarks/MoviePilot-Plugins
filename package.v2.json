@@ -3,11 +3,12 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
+      "v1.4.1": "修复115离线下载接口，移除115重命名整理功能",
       "v1.4.0": "新增MP重命名整理功能，直调115 API完成媒体识别、重命名和移动"
     }
   }
