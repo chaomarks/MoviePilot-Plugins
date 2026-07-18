@@ -35,7 +35,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.6"
+    plugin_version = "1.4.7"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1123,6 +1123,9 @@ class ClSearch(_PluginBase):
 
         Args:
             data: 下载信息，包含 magnet 和 title
+
+        Returns:
+            含 success、message、data 的字典
         """
         if not self._enabled:
             return {"success": False, "message": "插件未启用"}
@@ -1142,21 +1145,48 @@ class ClSearch(_PluginBase):
         if not magnet:
             return {"success": False, "message": "请提供有效的磁力链接"}
 
+        # 验证磁力链接格式（简单前缀检查）
+        magnet = magnet.strip()
+        if not (magnet.startswith("magnet:?") or magnet.startswith("http")):
+            return {"success": False, "message": "不支持的链接格式，请使用磁力链接(magnet:)或HTTP链接"}
+
+        # 验证目录ID是否为有效数字
+        try:
+            save_dir_id = int(self._save_dir_id)
+        except (ValueError, TypeError):
+            logger.error(f"无效的115目录ID: {self._save_dir_id}")
+            return {"success": False, "message": f"无效的115目录ID: {self._save_dir_id}，请检查配置"}
+
         try:
             p115_cookie = self._normalize_cookie(self._p115_cookie)
             # 使用 p115client 库调用离线下载 API
             client = P115Client(p115_cookie)
             payload = {
-                "url": magnet,
-                "wp_path_id": int(self._save_dir_id),  # 目录ID
+                "urls": magnet,
+                "wp_path_id": save_dir_id,
             }
 
             logger.info(f"添加115离线下载: {title}")
 
-            result = client.clouddownload_task_add_url(payload)
+            result = client.clouddownload_task_add_urls(payload)
 
             # 检查返回结果
-            if result and result.get("state"):
+            state = result.get("state", False) if result else False
+            errcode = result.get("errcode") if result else None
+            error_msg = (result.get("error_msg") or result.get("error") or
+                         result.get("message") or "")
+
+            # 任务已存在（重复添加）
+            if errcode == 10008:
+                logger.info(f"115离线下载任务已存在: {title}")
+                self._record_offline_history(title, True)
+                return {
+                    "success": True,
+                    "message": f"任务已存在，跳过重复添加: {title}",
+                    "data": result,
+                }
+
+            if state:
                 logger.info(f"115离线下载添加成功: {title}")
                 self._record_offline_history(title, True)
                 return {
@@ -1164,15 +1194,17 @@ class ClSearch(_PluginBase):
                     "message": f"已添加到115离线下载: {title}",
                     "data": result,
                 }
-            else:
-                error_msg = result.get("error") or result.get("message") or "未知错误"
-                logger.error(f"115离线下载添加失败: {error_msg}")
-                self._record_offline_history(title, False, error_msg)
-                return {
-                    "success": False,
-                    "message": f"添加失败: {error_msg}",
-                    "data": result,
-                }
+
+            # 其他业务错误
+            if not error_msg:
+                error_msg = f"未知错误 (errcode={errcode})" if errcode else "未知错误"
+            logger.error(f"115离线下载添加失败: {error_msg}")
+            self._record_offline_history(title, False, error_msg)
+            return {
+                "success": False,
+                "message": f"添加失败: {error_msg}",
+                "data": result,
+            }
 
         except Exception as e:
             logger.error(f"115离线下载异常: {e}")
