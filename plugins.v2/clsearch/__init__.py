@@ -59,7 +59,6 @@ class ClSearch(_PluginBase):
     _save_dir_id = ""
     _resolved_path = ""  # CID 解析出的完整路径
     _auto_transfer = False  # 离线下载完成后自动整理
-    _download_mount_path = ""  # 115下载目录本地挂载路径（自动整理用）
 
     # 搜索 & 离线历史记录
     _search_history: List[Dict[str, Any]] = []
@@ -89,7 +88,6 @@ class ClSearch(_PluginBase):
         self._resolved_path = ""
         self._session = None
         self._auto_transfer = False
-        self._download_mount_path = ""
 
         if not config:
             return
@@ -103,7 +101,6 @@ class ClSearch(_PluginBase):
         # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
         self._auto_transfer = bool(config.get("auto_transfer"))
-        self._download_mount_path = str(config.get("download_mount_path") or "").strip()
 
         # CID 变更时自动解析路径并写回配置
         if self._save_dir_id and self._p115_cookie and not self._resolved_path:
@@ -417,22 +414,6 @@ class ClSearch(_PluginBase):
                                     }
                                 ],
                             },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 8},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "download_mount_path",
-                                            "label": "下载目录本地挂载路径",
-                                            "placeholder": "例如：/volume1/downloads/115",
-                                            "hint": "115下载目录在本地的挂载路径（如通过rclone/WebDAV挂载），仅开启自动整理时需要",
-                                            "persistent-hint": True,
-                                        },
-                                    }
-                                ],
-                            },
                         ],
                     },
                 ],
@@ -446,7 +427,6 @@ class ClSearch(_PluginBase):
             "save_dir_id": "",
             "resolved_path": "",
             "auto_transfer": False,
-            "download_mount_path": "",
         }
 
     def get_page(self) -> List[dict]:
@@ -1435,8 +1415,7 @@ class ClSearch(_PluginBase):
                     )
                     # 触发自动整理
                     if self._auto_transfer:
-                        file_id = task.get("file_id", "")
-                        self._trigger_transfer(task_name, file_id, task)
+                        self._trigger_transfer(task_name, task)
 
                 elif status == -1:  # 下载失败
                     completed_keys.append(info_hash)
@@ -1457,18 +1436,18 @@ class ClSearch(_PluginBase):
         except Exception as e:
             logger.error(f"115离线任务状态检查异常: {e}")
 
-    def _trigger_transfer(self, task_name: str, file_id: str, task: dict) -> None:
+    def _trigger_transfer(self, task_name: str, task: dict) -> None:
         """触发MoviePilot自动整理
 
-        当115离线下载完成后，如果配置了本地挂载路径，则触发整理。
+        当115离线下载完成后，使用 _resolved_path（即离线路径）作为本地路径触发整理。
         """
         try:
-            if not self._download_mount_path:
-                logger.info(f"未配置下载目录本地挂载路径，跳过自动整理: {task_name}")
+            if not self._resolved_path:
+                logger.info(f"未解析离线目录路径，跳过自动整理: {task_name}")
                 return
 
-            # 构造文件路径
-            file_path = os.path.join(self._download_mount_path, task_name)
+            # 构造文件路径：使用离线保存路径拼接任务文件名
+            file_path = os.path.join(self._resolved_path, task_name)
             logger.info(f"触发自动整理: {file_path}")
 
             # 发送 DownloadAdded 事件，触发整理服务
