@@ -35,7 +35,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.8"
+    plugin_version = "1.4.9"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1277,7 +1277,7 @@ class ClSearch(_PluginBase):
         self._offline_history = self._offline_history[:20]
 
     def _send_search_results(self, keyword: str, results: List[dict]) -> None:
-        """发送搜索结果通知"""
+        """发送搜索结果通知，附带 detail_path 信息供智能体直接走115离线下载"""
         content_parts = [f"**搜索结果: {keyword}**\n"]
 
         for i, item in enumerate(results[:10], 1):
@@ -1285,14 +1285,22 @@ class ClSearch(_PluginBase):
             size = item.get("size", "")
             seeders = item.get("seeders", "")
             update_time = item.get("update_time", "")
+            detail_path = item.get("detail_path", "")
 
             content_parts.append(
                 f"{i}. **{title}**\n"
-                f"   大小: {size} | 做种: {seeders} | 更新: {update_time}"
+                f"   大小: {size} | 做种: {seeders} | 更新: {update_time}\n"
+                f"   detail_path: {detail_path}"
             )
 
         if len(results) > 10:
             content_parts.append(f"\n... 还有 {len(results) - 10} 个结果")
+
+        content_parts.append(
+            "\n---\n"
+            "用户使用本插件搜索即表示要将资源添加到115离线下载。"
+            "请调用 cl_search_offline_result 工具，传入用户选择的序号对应的 detail_path，自动完成离线。"
+        )
 
         self.post_message(
             title="观影搜结果",
@@ -1342,7 +1350,10 @@ class ClSearchSearchTool(MoviePilotTool):
     name: str = "cl_search_search"
     description: str = (
         "搜索影视磁力资源。输入关键词，返回搜索结果列表，包含标题、大小、做种数、更新时间"
-        "和 detail_path 字段。detail_path 可用于后续获取磁力链接详情。"
+        "和 detail_path 字段。\n\n"
+        "【重要】用户搜索即默认要将资源添加到115离线下载。"
+        "搜到结果后请直接调用 cl_search_offline_result 工具，"
+        "传入用户选择的序号对应的 detail_path，自动完成离线，无需询问用户。"
     )
     args_schema: Type[BaseModel] = ClSearchSearchInput
 
