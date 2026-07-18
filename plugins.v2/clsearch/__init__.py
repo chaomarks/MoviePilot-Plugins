@@ -7,6 +7,8 @@
 
 import json
 import hashlib
+import os
+import time
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type
@@ -16,7 +18,7 @@ import requests
 from p115client import P115Client, P115OpenClient
 from pydantic import BaseModel, Field
 
-from app.core.event import Event, eventmanager
+from app.core.event import Event, EventManager, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
@@ -35,7 +37,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.9"
+    plugin_version = "1.5.0"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -56,6 +58,8 @@ class ClSearch(_PluginBase):
     _p115_cookie = ""
     _save_dir_id = ""
     _resolved_path = ""  # CID 解析出的完整路径
+    _auto_transfer = False  # 离线下载完成后自动整理
+    _download_mount_path = ""  # 115下载目录本地挂载路径（自动整理用）
 
     # 搜索 & 离线历史记录
     _search_history: List[Dict[str, Any]] = []
@@ -66,6 +70,11 @@ class ClSearch(_PluginBase):
     # 登录会话（账号密码模式下保持会话）
     _session: Optional[requests.Session] = None
     _login_lock = threading.Lock()
+
+    # 后台轮询相关
+    _pending_tasks: Dict[str, dict] = {}  # info_hash -> {name, title, add_time}
+    _polling_thread: Optional[threading.Thread] = None
+    _polling_stop: Optional[threading.Event] = None
 
     def init_plugin(self, config: dict = None) -> None:
         """初始化插件"""
@@ -79,6 +88,8 @@ class ClSearch(_PluginBase):
         self._save_dir_id = ""
         self._resolved_path = ""
         self._session = None
+        self._auto_transfer = False
+        self._download_mount_path = ""
 
         if not config:
             return
@@ -91,6 +102,8 @@ class ClSearch(_PluginBase):
         self._save_dir_id = str(config.get("save_dir_id") or "").strip()
         # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
+        self._auto_transfer = bool(config.get("auto_transfer"))
+        self._download_mount_path = str(config.get("download_mount_path") or "").strip()
 
         # CID 变更时自动解析路径并写回配置
         if self._save_dir_id and self._p115_cookie and not self._resolved_path:
@@ -363,6 +376,65 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
+                    # ========== 分隔线 ==========
+                    {
+                        "component": "VDivider",
+                        "props": {"class": "mt-4 mb-4"},
+                    },
+                    # ========== 分隔标题：离线完成自动整理 ==========
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VSubheader",
+                                        "props": {"class": "text-subtitle-2 font-weight-bold mb-1"},
+                                        "text": "离线完成自动整理",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "auto_transfer",
+                                            "label": "完成后自动整理",
+                                            "color": "primary",
+                                            "hint": "开启后，115离线下载完成时自动触发MoviePilot整理入库",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 8},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "download_mount_path",
+                                            "label": "下载目录本地挂载路径",
+                                            "placeholder": "例如：/volume1/downloads/115",
+                                            "hint": "115下载目录在本地的挂载路径（如通过rclone/WebDAV挂载），仅开启自动整理时需要",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
                 ],
             }
         ], {
@@ -373,6 +445,8 @@ class ClSearch(_PluginBase):
             "p115_cookie": "",
             "save_dir_id": "",
             "resolved_path": "",
+            "auto_transfer": False,
+            "download_mount_path": "",
         }
 
     def get_page(self) -> List[dict]:
@@ -1200,6 +1274,23 @@ class ClSearch(_PluginBase):
             if state:
                 logger.info(f"115离线下载添加成功: {title}")
                 self._record_offline_history(title, True)
+
+                # 从返回结果中提取 info_hash，加入轮询监控
+                data_items = result.get("data") or []
+                if isinstance(data_items, list):
+                    for item in data_items:
+                        if isinstance(item, dict):
+                            info_hash = item.get("info_hash") or ""
+                            if info_hash:
+                                self._pending_tasks[info_hash] = {
+                                    "name": item.get("name", title),
+                                    "title": title,
+                                    "add_time": time.time(),
+                                }
+                                logger.info(f"已加入离线完成轮询监控: {title} ({info_hash[:12]}...)")
+                # 启动后台轮询
+                self._start_polling()
+
                 return {
                     "success": True,
                     "message": f"已添加到115离线下载: {title}",
@@ -1254,6 +1345,150 @@ class ClSearch(_PluginBase):
                 content=result.get("message", "搜索失败"),
                 notification_type=NotificationType.Warning,
             )
+
+    # ==================== 后台轮询 ====================
+
+    def _start_polling(self) -> None:
+        """启动后台轮询线程，监控115离线任务完成状态"""
+        if self._polling_thread and self._polling_thread.is_alive():
+            return
+        self._polling_stop = threading.Event()
+        self._polling_thread = threading.Thread(
+            target=self._polling_worker,
+            name="115OfflinePolling",
+            daemon=True,
+        )
+        self._polling_thread.start()
+        logger.info("115离线下载轮询线程已启动")
+
+    def _stop_polling(self) -> None:
+        """停止后台轮询线程"""
+        if self._polling_stop:
+            self._polling_stop.set()
+        if self._polling_thread:
+            self._polling_thread.join(timeout=5)
+            self._polling_thread = None
+        logger.info("115离线下载轮询线程已停止")
+
+    def _polling_worker(self) -> None:
+        """后台轮询工作线程：每30秒检查一次离线任务状态"""
+        while not self._polling_stop.is_set():
+            try:
+                if self._pending_tasks:
+                    self._check_task_status()
+                else:
+                    # 没有待监控任务，休眠60秒再检查
+                    self._polling_stop.wait(60)
+                    continue
+            except Exception as e:
+                logger.error(f"115离线轮询异常: {e}")
+            # 每次查询间隔30秒
+            self._polling_stop.wait(30)
+
+    def _check_task_status(self) -> None:
+        """检查115离线任务状态，标记已完成的任务"""
+        if not self._pending_tasks:
+            return
+
+        try:
+            p115_cookie = self._normalize_cookie(self._p115_cookie)
+            client = P115Client(p115_cookie)
+            result = P115OpenClient.clouddownload_task_list(client)
+
+            if not result or not result.get("state"):
+                return
+
+            data = result.get("data") or {}
+            tasks = data.get("tasks") or []
+
+            now = time.time()
+            # 将任务列表按 info_hash 建立索引
+            task_map = {}
+            for task in tasks:
+                ih = task.get("info_hash")
+                if ih:
+                    task_map[ih] = task
+
+            completed_keys = []
+            expired_keys = []
+
+            for info_hash, task_info in list(self._pending_tasks.items()):
+                task = task_map.get(info_hash)
+                if not task:
+                    # 检查是否超时（超过24小时）
+                    if now - task_info.get("add_time", 0) > 86400:
+                        expired_keys.append(info_hash)
+                    continue
+
+                status = task.get("status")
+                task_name = task.get("name", task_info.get("title", ""))
+
+                if status == 2:  # 下载成功
+                    completed_keys.append(info_hash)
+                    logger.info(f"115离线下载完成: {task_name}")
+                    self._record_offline_history(task_name, True)
+                    # 发送通知
+                    self.post_message(
+                        title="115离线下载完成",
+                        content=f"**{task_name}** 已离线下载完成",
+                        notification_type=NotificationType.Information,
+                    )
+                    # 触发自动整理
+                    if self._auto_transfer:
+                        file_id = task.get("file_id", "")
+                        self._trigger_transfer(task_name, file_id, task)
+
+                elif status == -1:  # 下载失败
+                    completed_keys.append(info_hash)
+                    logger.error(f"115离线下载失败: {task_name}")
+                    self._record_offline_history(task_name, False, f"状态码 -1")
+                    self.post_message(
+                        title="115离线下载失败",
+                        content=f"**{task_name}** 离线下载失败",
+                        notification_type=NotificationType.Warning,
+                    )
+
+            # 清理已完成和过期任务
+            for k in completed_keys:
+                self._pending_tasks.pop(k, None)
+            for k in expired_keys:
+                self._pending_tasks.pop(k, None)
+
+        except Exception as e:
+            logger.error(f"115离线任务状态检查异常: {e}")
+
+    def _trigger_transfer(self, task_name: str, file_id: str, task: dict) -> None:
+        """触发MoviePilot自动整理
+
+        当115离线下载完成后，如果配置了本地挂载路径，则触发整理。
+        """
+        try:
+            if not self._download_mount_path:
+                logger.info(f"未配置下载目录本地挂载路径，跳过自动整理: {task_name}")
+                return
+
+            # 构造文件路径
+            file_path = os.path.join(self._download_mount_path, task_name)
+            logger.info(f"触发自动整理: {file_path}")
+
+            # 发送 DownloadAdded 事件，触发整理服务
+            manager = EventManager()
+            manager.send_event(
+                etype=EventType.DownloadAdded,
+                data={
+                    "path": file_path,
+                    "name": task_name,
+                    "source": "115离线下载",
+                },
+                priority=10,
+            )
+            self.post_message(
+                title="115离线自动整理",
+                content=f"**{task_name}** 已触发自动整理",
+                notification_type=NotificationType.Information,
+            )
+        except Exception as e:
+            logger.error(f"115离线自动整理异常: {e}")
 
     # ==================== 历史记录 ====================
 
@@ -1314,6 +1549,8 @@ class ClSearch(_PluginBase):
 
     def stop_service(self) -> None:
         """停止插件服务"""
+        self._stop_polling()
+        self._pending_tasks.clear()
         self._search_cache.clear()
         self._session = None
         logger.info("观影搜插件服务已停止")

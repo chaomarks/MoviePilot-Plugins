@@ -3,14 +3,14 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.4.9",
+    "version": "1.5.0",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
+      "v1.5.0": "新增离线下载完成后台轮询监控，支持自动整理触发",
       "v1.4.8": "改用 P115OpenClient 的 Open API，增加 data 数组单条失败检测",
-      "v1.4.7": "完善离线下载错误处理，增加 errcode 判定和参数验证",
-      "v1.4.6": "改用 p115client 库调用115离线下载API，移除手动HTTP请求"
+      "v1.4.7": "完善离线下载错误处理，增加 errcode 判定和参数验证"
     }
   }
 }
