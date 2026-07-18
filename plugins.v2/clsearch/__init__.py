@@ -8,6 +8,7 @@
 import re
 import json
 import hashlib
+import time
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type
@@ -35,7 +36,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.4"
+    plugin_version = "1.4.5"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1118,6 +1119,42 @@ class ClSearch(_PluginBase):
             logger.error(f"解析详情页面失败: {e}")
             return None
 
+    @staticmethod
+    def _extract_uid_from_cookie(cookie: str) -> str:
+        """从115 Cookie中提取UID"""
+        if not cookie:
+            return ""
+        # 匹配 UID=数字 或 UID=数字;
+        match = re.search(r'UID\s*=\s*(\d+)', cookie)
+        if match:
+            return match.group(1)
+        return ""
+
+    def _get_offline_sign(self, cookie: str) -> dict:
+        """获取115离线下载的 sign 和 uid
+
+        Returns:
+            {"sign": str, "uid": str} 或 {"error": str}
+        """
+        try:
+            headers = {
+                "Cookie": cookie,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://115.com/",
+            }
+            ts = str(int(time.time() * 1000))
+            url = f"https://115.com/?ct=offline&ac=space&_={ts}"
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            result = resp.json()
+            if result and result.get("sign"):
+                uid = result.get("uid") or self._extract_uid_from_cookie(cookie)
+                return {"sign": result["sign"], "uid": uid}
+            return {"error": "获取sign失败"}
+        except Exception as e:
+            logger.error(f"获取115离线sign异常: {e}")
+            return {"error": str(e)}
+
     def _api_offline_download(self, data: dict = None) -> dict:
         """API: 添加115离线下载
 
@@ -1144,16 +1181,31 @@ class ClSearch(_PluginBase):
 
         try:
             p115_cookie = self._normalize_cookie(self._p115_cookie)
-            url = "https://clouddownload.115.com/lixianssp/?ac=add_task_url"
+
+            # 获取 sign 和 uid
+            sign_info = self._get_offline_sign(p115_cookie)
+            if "error" in sign_info:
+                return {"success": False, "message": f"获取sign失败: {sign_info['error']}"}
+            sign = sign_info["sign"]
+            uid = sign_info["uid"]
+            if not uid:
+                return {"success": False, "message": "无法从Cookie中提取UID，请检查Cookie是否包含UID字段"}
+
+            url = "https://115.com/web/lixian/?ct=lixian&ac=add_task_url"
             headers = {
                 "Cookie": p115_cookie,
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://115.com/",
                 "Content-Type": "application/x-www-form-urlencoded",
             }
+            ts = str(int(time.time()))
             payload = {
-                "urls": magnet,
+                "url": quote(magnet),
+                "savepath": "",
                 "wp_path_id": self._save_dir_id,
+                "uid": uid,
+                "sign": sign,
+                "time": ts,
             }
 
             logger.info(f"添加115离线下载: {title}")
@@ -1171,7 +1223,7 @@ class ClSearch(_PluginBase):
                     "data": result,
                 }
             else:
-                error_msg = result.get("error") or result.get("message") or "未知错误"
+                error_msg = result.get("error") or result.get("error_msg") or result.get("message") or "未知错误"
                 logger.error(f"115离线下载添加失败: {error_msg}")
                 self._record_offline_history(title, False, error_msg)
                 return {
