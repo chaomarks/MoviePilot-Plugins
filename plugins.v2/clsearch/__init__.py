@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 from urllib.parse import urljoin
 
 import requests
-from p115client import P115Client
+from p115client import P115Client, P115OpenClient
 from pydantic import BaseModel, Field
 
 from app.core.event import Event, eventmanager
@@ -35,7 +35,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.4.7"
+    plugin_version = "1.4.8"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1160,6 +1160,8 @@ class ClSearch(_PluginBase):
         try:
             p115_cookie = self._normalize_cookie(self._p115_cookie)
             # 使用 p115client 库调用离线下载 API
+            # 必须使用 P115OpenClient 的方法（走 proapi.115.com/open/offline/add_task_urls）
+            # P115Client 的覆盖版本使用 clouddownload.115.com SSP 接口，对某些磁力链返回"错误的链接"
             client = P115Client(p115_cookie)
             payload = {
                 "urls": magnet,
@@ -1168,13 +1170,22 @@ class ClSearch(_PluginBase):
 
             logger.info(f"添加115离线下载: {title}")
 
-            result = client.clouddownload_task_add_urls(payload)
+            result = P115OpenClient.clouddownload_task_add_urls(client, payload)
 
-            # 检查返回结果
+            # 检查返回结果（兼容 Open API 和 SSP API 两种格式）
             state = result.get("state", False) if result else False
-            errcode = result.get("errcode") if result else None
+            errcode = result.get("errcode") or result.get("code") if result else None
             error_msg = (result.get("error_msg") or result.get("error") or
                          result.get("message") or "")
+            # Open API 成功时 data 数组内也可能有单条失败
+            if state and not error_msg:
+                data_items = result.get("data") or []
+                if isinstance(data_items, list):
+                    for item in data_items:
+                        if isinstance(item, dict) and not item.get("state", True):
+                            state = False
+                            error_msg = item.get("message") or item.get("error_msg") or f"单条任务失败 (code={item.get('code')})"
+                            break
 
             # 任务已存在（重复添加）
             if errcode == 10008:
