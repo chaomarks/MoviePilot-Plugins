@@ -39,7 +39,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.3.4"
+    plugin_version = "1.5.3.5"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1849,15 +1849,8 @@ class ClSearch(_PluginBase):
                 })
                 return
 
-            # Step 4: 查询目标目录并记录待整理任务（供智能体后续处理广告删除和移动）
+            # Step 4: record pending task; agent decides target directory from MP mapping config
             final_path = f"{self._resolved_path}/{new_folder_name}"
-            target_dir = None
-            if media_type:
-                target_dir_info = self._get_target_directory(media_type, year, title)
-                if target_dir_info:
-                    target_dir = target_dir_info.get("library_path")
-                    logger.info(f"查询到目标目录: {target_dir}")
-
             self._record_pending_task(task_name, final_path, {
                 "rename_result": rename_result.get("message"),
                 "media_type": media_type,
@@ -1865,25 +1858,23 @@ class ClSearch(_PluginBase):
                 "year": year,
                 "tmdb_id": tmdb_id,
                 "folder_cid": folder_cid,
-                "target_dir": target_dir,
+                "needs_agent_target_match": True,
             })
 
-            # Step 5: 通知智能体处理广告删除和移动入库
-            _title_for_notify = re.sub(r'^【[^】]*】\s*', '', task_name)
-            _title_for_notify = re.sub(r'^\[[^\]]*\]\s*', '', _title_for_notify)
-            _match = re.match(r'^([^\.\[]+)', _title_for_notify)
+            # Step 5: notify agent to delete ads and move folder using MP built-in move
+            _title_for_notify = re.sub(r"^\[[^\]]*\]\s*", "", task_name)
+            _match = re.match(r"^([^\.\[]+)", _title_for_notify)
             _clean_name = _match.group(1).strip() if _match else _title_for_notify.strip()
 
-            notify_content = f"**离线下载完成: {task_name}**\n"
+            notify_content = f"**\u79bb\u7ebf\u4e0b\u8f7d\u5b8c\u6210: {task_name}**\n"
             if new_folder_name != task_name:
-                notify_content += f"重命名: `{task_name}` → `{new_folder_name}`\n"
-            notify_content += f"文件路径: `{final_path}`\n"
+                notify_content += f"\u91cd\u547d\u540d: `{task_name}` -> `{new_folder_name}`\n"
+            notify_content += f"\u6587\u4ef6\u8def\u5f84: `{final_path}`\n"
             notify_content += f"CID: `{folder_cid}`\n"
             if media_type:
-                notify_content += f"媒体类型: {media_type}\n"
-            if target_dir:
-                notify_content += f"目标目录: `{target_dir}`\n"
-            notify_content += f"\n请智能体处理：\n1. 识别并删除广告文件\n2. 用115 API将文件夹整体移动到目标目录"
+                notify_content += f"\u5a92\u4f53\u7c7b\u578b: {media_type}\n"
+            notify_content += "\u76ee\u6807\u76ee\u5f55: \u7531\u667a\u80fd\u4f53\u6839\u636eMP\u6620\u5c04\u914d\u7f6e\u8bc6\u522b\n"
+            notify_content += "\n\u8bf7\u667a\u80fd\u4f53\u5904\u7406:\n1. \u8bc6\u522b\u5e76\u5220\u9664\u5e7f\u544a\u6587\u4ef6\n2. \u6839\u636e\u5a92\u4f53\u7c7b\u578b\u548cMP\u6620\u5c04\u914d\u7f6e\u8bc6\u522b\u76ee\u6807\u76ee\u5f55\n3. \u4f7f\u7528MP\u5185\u7f6e\u79fb\u52a8\u80fd\u529b\u5c06\u6587\u4ef6\u5939\u6574\u4f53\u79fb\u52a8\u5230\u76ee\u6807\u76ee\u5f55"
 
             self.post_message(
                 title=f"{_clean_name} 重命名完成，待整理",
