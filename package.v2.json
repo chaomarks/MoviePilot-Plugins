@@ -3,7 +3,7 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.5.0",
+    "version": "1.5.1",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
