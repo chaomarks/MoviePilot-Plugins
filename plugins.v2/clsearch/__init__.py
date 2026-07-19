@@ -2300,7 +2300,7 @@ class ClSearchOfflineResultTool(MoviePilotTool):
                 "title": title,
             })
             if offline_result.get("success"):
-                return f"已成功添加到115离线下载: {title}\n{offline_result.get('message', '')}"
+                return offline_result.get("message", f"已成功添加到115离线下载: {title}")
             return f"离线下载失败: {offline_result.get('message', '未知错误')}"
         except Exception as e:
             return f"离线下载失败: {str(e)}"
@@ -2332,7 +2332,7 @@ class ClSearchOfflineTool(MoviePilotTool):
                 "title": title,
             })
             if result.get("success"):
-                return f"✅ 已成功添加到115离线下载: {title}\n{result.get('message', '')}"
+                return result.get("message", f"已成功添加到115离线下载: {title}")
             else:
                 return f"离线下载失败: {result.get('message', '未知错误')}"
         except Exception as e:
