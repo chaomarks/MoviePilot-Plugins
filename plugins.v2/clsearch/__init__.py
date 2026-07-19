@@ -39,7 +39,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.1"
+    plugin_version = "1.5.2"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -103,6 +103,20 @@ class ClSearch(_PluginBase):
         # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
         self._auto_transfer = bool(config.get("auto_transfer"))
+
+        # 恢复待整理任务并启动轮询
+        saved_pending = self.get_data("pending_transfer_tasks") or []
+        if saved_pending:
+            for t in saved_pending:
+                task_name = t.get("task_name", "")
+                if task_name:
+                    self._pending_tasks[f"restored_{task_name}"] = {
+                        "name": task_name,
+                        "title": t.get("task_name", ""),
+                        "add_time": time.time(),
+                    }
+            if self._enabled:
+                self._start_polling()
 
         # CID 变更时自动解析路径并写回配置
         if self._save_dir_id and self._p115_cookie and not self._resolved_path:
@@ -172,6 +186,13 @@ class ClSearch(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "通过CID解析115目录完整路径",
+            },
+            {
+                "path": "/ClSearch/rename",
+                "endpoint": self._api_recursive_rename,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "递归重命名115目录内媒体文件",
             },
         ]
 
@@ -687,6 +708,16 @@ class ClSearch(_PluginBase):
                                 f"{k}={v}" for k, v in cookie_dict.items()
                             )
                             logger.info(f"站点登录成功，获取到 {len(cookie_dict)} 个Cookie字段")
+                            # 持久化 Cookie 到配置
+                            try:
+                                from app.core.plugin import PluginManager
+                                plugin_obj = PluginManager().running_plugins.get("ClSearch") or PluginManager().running_plugins.get("clsearch")
+                                if plugin_obj and hasattr(plugin_obj, '_config'):
+                                    cfg = dict(plugin_obj._config)
+                                    cfg["site_cookie"] = self._site_cookie
+                                    plugin_obj.update_config(cfg)
+                            except Exception as persist_e:
+                                logger.warning(f"Cookie持久化失败: {persist_e}")
                             return True, "登录成功"
                         else:
                             return False, "登录成功但未获取到Cookie"
@@ -703,6 +734,16 @@ class ClSearch(_PluginBase):
                         self._session = session
                         self._site_cookie = cookie_str
                         logger.info("站点登录成功（通过重定向判断）")
+                        # 持久化 Cookie
+                        try:
+                            from app.core.plugin import PluginManager
+                            plugin_obj = PluginManager().running_plugins.get("ClSearch") or PluginManager().running_plugins.get("clsearch")
+                            if plugin_obj and hasattr(plugin_obj, '_config'):
+                                cfg = dict(plugin_obj._config)
+                                cfg["site_cookie"] = self._site_cookie
+                                plugin_obj.update_config(cfg)
+                        except Exception as persist_e:
+                            logger.warning(f"Cookie持久化失败: {persist_e}")
                         return True, "登录成功"
                     return False, "无法解析登录响应"
 
@@ -1324,11 +1365,11 @@ class ClSearch(_PluginBase):
         if not self._p115_cookie:
             return {"success": False, "message": "未配置115网盘Cookie"}
 
-        if not data or not data.get("cid") or not data.get("new_name"):
-            return {"success": False, "message": "需要 cid 和 new_name"}
+        if not data or not data.get("cid"):
+            return {"success": False, "message": "需要 cid"}
 
         cid = str(data["cid"])
-        new_name = str(data["new_name"])
+        new_name = str(data.get("new_name", "")).strip()
 
         try:
             p115_cookie = self._normalize_cookie(self._p115_cookie)
@@ -1338,17 +1379,19 @@ class ClSearch(_PluginBase):
                 "Referer": "https://115.com/",
             }
 
-            # Step 1: 重命名顶层文件夹
-            rename_result = self._api_rename({
-                "cid": cid,
-                "name": new_name,
-            })
-            if not rename_result.get("success"):
-                return rename_result
+            # Step 1: 重命名顶层文件夹（仅当 new_name 有值时）
+            if new_name:
+                rename_result = self._api_rename({
+                    "cid": cid,
+                    "name": new_name,
+                })
+                if not rename_result.get("success"):
+                    return rename_result
 
             # Step 2: 遍历内部文件并重命名
             count = 0
             created_dirs = 0
+            file_status_list = []
 
             # 获取文件夹内容
             client = P115Client(p115_cookie)
@@ -1391,12 +1434,11 @@ class ClSearch(_PluginBase):
                         # 检查文件扩展名
                         if file_ext in ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm']:
                             # 检测文件名中的剧集信息
-                            season_match = re.search(r'[Ss](\d+)[Ee]?(\d+)', original_name)
-                            episode_match = re.search(r'[Ss](\d+)[Ee]?(\d+)', original_name)
+                            season_match = re.search(r'[Ss](\d+)[Ee](\d+)', original_name)
 
-                            if season_match and episode_match:
+                            if season_match:
                                 season = int(season_match.group(1))
-                                episode = int(episode_match.group(2))
+                                episode = int(season_match.group(2))
 
                                 # 确定文件名
                                 new_file_name = f"{new_name}.S{season:02d}E{episode:02d}{file_ext}"
@@ -1439,17 +1481,26 @@ class ClSearch(_PluginBase):
 
                                     # 如果Season目录存在，移动并重命名文件
                                     if season_folder_cid:
-                                        # 移动文件到Season目录
+                                        # 先移动文件到Season目录
                                         move_result = self._api_move_file({
-                                            "cid": cid,
-                                            "file_cid": file_cid,
+                                            "cid": file_cid,
                                             "target_cid": season_folder_cid,
-                                            "rename": new_file_name,
                                         })
                                         if move_result.get("success"):
-                                            count += 1
-                                            logger.info(f"移动到Season目录并改名: {original_name} -> {new_file_name}")
+                                            # 再重命名文件
+                                            rename_file_result = self._api_rename({
+                                                "cid": file_cid,
+                                                "name": new_file_name,
+                                            })
+                                            if rename_file_result.get("success"):
+                                                count += 1
+                                                file_status_list.append({"old_name": original_name, "new_name": new_file_name, "status": "✅ 已重命名"})
+                                                logger.info(f"移动到Season目录并改名: {original_name} -> {new_file_name}")
+                                            else:
+                                                file_status_list.append({"old_name": original_name, "new_name": new_file_name, "status": f"移动成功但重命名失败: {rename_file_result.get('message')}"})
+                                                logger.error(f"移动后重命名失败: {rename_file_result.get('message')}")
                                         else:
+                                            file_status_list.append({"old_name": original_name, "new_name": new_file_name, "status": f"移动失败: {move_result.get('message')}"})
                                             logger.error(f"移动文件到Season目录失败: {move_result.get('message')}")
                                     else:
                                         # Season目录创建失败，直接重命名文件
@@ -1459,6 +1510,7 @@ class ClSearch(_PluginBase):
                                         })
                                         if rename_file_result.get("success"):
                                             count += 1
+                                            file_status_list.append({"old_name": original_name, "new_name": new_file_name, "status": "✅ 已重命名"})
                                             logger.info(f"重命名文件: {original_name} -> {new_file_name}")
                                 else:
                                     # 电影：直接重命名文件
@@ -1468,9 +1520,11 @@ class ClSearch(_PluginBase):
                                     })
                                     if rename_file_result.get("success"):
                                         count += 1
+                                        file_status_list.append({"old_name": original_name, "new_name": new_file_name, "status": "✅ 已重命名"})
                                         logger.info(f"重命名文件: {original_name} -> {new_file_name}")
                             else:
                                 # 没有剧集信息，保持原名
+                                file_status_list.append({"old_name": original_name, "new_name": original_name, "status": "无需修改"})
                                 logger.info(f"跳过文件（无剧集信息）: {original_name}")
 
                     # Step 3: 更新子文件夹名称（如果需要）
@@ -1491,6 +1545,7 @@ class ClSearch(_PluginBase):
             return {
                 "success": True,
                 "message": f"递归重命名完成: 文件 {count} 个, 创建目录 {created_dirs} 个",
+                "files": file_status_list,
                 "renamed": count,
                 "created_dirs": created_dirs,
             }
@@ -2182,9 +2237,9 @@ class ClSearchSearchTool(MoviePilotTool):
             result_lines = [f"搜索 '{keyword}' 找到 {len(data)} 个资源:"]
             for i, item in enumerate(data[:10], 1):
                 result_lines.append(
-                    f"\n{i}. {item['title']}\n"
-                    f"   大小: {item['size']} | 做种: {item['seeders']} | 更新: {item['update_time']}\n"
-                    f"   detail_path: {item['detail_path']}"
+                    f"\n{i}. {item.get('title', '')}\n"
+                    f"   大小: {item.get('size', '')} | 做种: {item.get('seeders', '')} | 更新: {item.get('update_time', '')}\n"
+                    f"   detail_path: {item.get('detail_path', '')}"
                 )
 
             if len(data) > 10:
