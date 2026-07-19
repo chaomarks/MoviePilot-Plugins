@@ -39,7 +39,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.3.1"
+    plugin_version = "1.5.3.2"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1348,143 +1348,150 @@ class ClSearch(_PluginBase):
         except Exception as e:
             return {"success": False, "message": f"获取文件列表失败: {str(e)}"}
 
+
+
     def _api_offline_download(self, data: dict = None) -> dict:
-        """API: 添加115离线下载
-
-        Args:
-            data: 下载信息，包含 magnet 和 title
-
-        Returns:
-            含 success、message、data 的字典
-        """
+        """API: add 115 offline download task."""
         if not self._enabled:
-            return {"success": False, "message": "插件未启用"}
+            return {"success": False, "message": "\u63d2\u4ef6\u672a\u542f\u7528"}
 
         if not self._p115_cookie:
-            return {"success": False, "message": "未配置115网盘Cookie"}
+            return {"success": False, "message": "\u672a\u914d\u7f6e115\u7f51\u76d8Cookie"}
 
         if not self._save_dir_id:
-            return {"success": False, "message": "未配置115离线下载目录ID"}
+            return {"success": False, "message": "\u672a\u914d\u7f6e115\u79bb\u7ebf\u4e0b\u8f7d\u76ee\u5f55ID"}
 
         if not data:
-            return {"success": False, "message": "请提供下载信息"}
+            return {"success": False, "message": "\u8bf7\u63d0\u4f9b\u4e0b\u8f7d\u4fe1\u606f"}
 
-        magnet = data.get("magnet") or ""
+        magnet = (data.get("magnet") or "").strip()
         title = data.get("title") or ""
 
         if not magnet:
-            return {"success": False, "message": "请提供有效的磁力链接"}
+            return {"success": False, "message": "\u8bf7\u63d0\u4f9b\u6709\u6548\u7684\u78c1\u529b\u94fe\u63a5"}
 
-        # 验证磁力链接格式（简单前缀检查）
-        magnet = magnet.strip()
         if not (magnet.startswith("magnet:?") or magnet.startswith("http")):
-            return {"success": False, "message": "不支持的链接格式，请使用磁力链接(magnet:)或HTTP链接"}
+            return {"success": False, "message": "\u4e0d\u652f\u6301\u7684\u94fe\u63a5\u683c\u5f0f\uff0c\u8bf7\u4f7f\u7528\u78c1\u529b\u94fe\u63a5(magnet:)\u6216HTTP\u94fe\u63a5"}
 
-        # 验证目录ID是否为有效数字
         try:
             save_dir_id = int(self._save_dir_id)
         except (ValueError, TypeError):
-            logger.error(f"无效的115目录ID: {self._save_dir_id}")
-            return {"success": False, "message": f"无效的115目录ID: {self._save_dir_id}，请检查配置"}
+            logger.error(f"\u65e0\u6548\u7684115\u76ee\u5f55ID: {self._save_dir_id}")
+            return {"success": False, "message": f"\u65e0\u6548\u7684115\u76ee\u5f55ID: {self._save_dir_id}\uff0c\u8bf7\u68c0\u67e5\u914d\u7f6e"}
 
         try:
             p115_cookie = self._normalize_cookie(self._p115_cookie)
-            # 使用 p115client 库调用离线下载 API
-            # 必须使用 P115OpenClient 的方法（走 proapi.115.com/open/offline/add_task_urls）
-            # P115Client 的覆盖版本使用 clouddownload.115.com SSP 接口，对某些磁力链返回"错误的链接"
             client = P115Client(p115_cookie)
             payload = {
                 "urls": magnet,
                 "wp_path_id": save_dir_id,
             }
 
-            logger.info(f"添加115离线下载: {title}, 目标目录CID: {save_dir_id}")
-
+            logger.info(f"\u6dfb\u52a0115\u79bb\u7ebf\u4e0b\u8f7d: {title}, \u76ee\u6807\u76ee\u5f55CID: {save_dir_id}")
             result = P115OpenClient.clouddownload_task_add_urls(client, payload)
 
-            # 检查返回结果（兼容 Open API 和 SSP API 两种格式）
             state = result.get("state", False) if result else False
             errcode = result.get("errcode") or result.get("code") if result else None
-            error_msg = (result.get("error_msg") or result.get("error") or
-                         result.get("message") or "")
-            # Open API 成功时 data 数组内也可能有单条失败
+            error_msg = (result.get("error_msg") or result.get("error") or result.get("message") or "") if result else ""
+
             if state and not error_msg:
                 data_items = result.get("data") or []
                 if isinstance(data_items, list):
                     for item in data_items:
                         if isinstance(item, dict) and not item.get("state", True):
                             state = False
-                            error_msg = item.get("message") or item.get("error_msg") or f"单条任务失败 (code={item.get('code')})"
+                            error_msg = item.get("message") or item.get("error_msg") or f"\u5355\u6761\u4efb\u52a1\u5931\u8d25 (code={item.get('code')})"
                             break
 
-            # 任务已存在（重复添加）
+            def _extract_info_hash_from_magnet(url: str) -> str:
+                match = re.search(r"btih:([A-Fa-f0-9]{32,40})", url or "", re.IGNORECASE)
+                return match.group(1).lower() if match else ""
+
+            def _iter_result_items(value):
+                if isinstance(value, list):
+                    for row in value:
+                        if isinstance(row, dict):
+                            yield row
+                elif isinstance(value, dict):
+                    for key in ("tasks", "data", "list", "items"):
+                        yield from _iter_result_items(value.get(key))
+
+            def _track_offline_task(reason: str) -> str:
+                info_hash = ""
+                task_name = title
+                for item in _iter_result_items(result):
+                    info_hash = item.get("info_hash") or item.get("hash") or item.get("btih") or info_hash
+                    task_name = item.get("name") or item.get("file_name") or item.get("title") or task_name
+                    if info_hash:
+                        break
+                if not info_hash:
+                    info_hash = _extract_info_hash_from_magnet(magnet)
+                    if info_hash:
+                        logger.info(f"\u4ece\u78c1\u529b\u94fe\u63a5\u63d0\u53d6 info_hash \u7528\u4e8e\u8f6e\u8be2: {info_hash[:12]}...")
+                if not info_hash:
+                    logger.warning(f"\u672a\u80fd\u83b7\u53d6 info_hash\uff0c\u65e0\u6cd5\u52a0\u5165\u79bb\u7ebf\u5b8c\u6210\u8f6e\u8be2\u76d1\u63a7: {title}")
+                    return ""
+                self._pending_tasks[info_hash] = {
+                    "name": task_name or title,
+                    "title": title,
+                    "add_time": time.time(),
+                }
+                logger.info(f"\u5df2\u52a0\u5165\u79bb\u7ebf\u5b8c\u6210\u8f6e\u8be2\u76d1\u63a7({reason}): {title} ({info_hash[:12]}...)")
+                self._start_polling()
+                return info_hash
+
             if errcode == 10008:
-                logger.info(f"115离线下载任务已存在: {title}")
+                logger.info(f"115\u79bb\u7ebf\u4e0b\u8f7d\u4efb\u52a1\u5df2\u5b58\u5728: {title}")
                 self._record_offline_history(title, True)
+                tracked_hash = _track_offline_task("duplicate")
+                self.post_message(
+                    title="115\u79bb\u7ebf\u4efb\u52a1\u5df2\u5b58\u5728",
+                    content=f"**{title}** \u5df2\u5728115\u79bb\u7ebf\u4efb\u52a1\u4e2d\uff0c\u5df2\u8df3\u8fc7\u91cd\u590d\u6dfb\u52a0\u3002" + (f"\ninfo_hash: `{tracked_hash}`" if tracked_hash else ""),
+                    notification_type=NotificationType.Information,
+                )
                 return {
                     "success": True,
-                    "message": f"任务已存在，跳过重复添加: {title}",
+                    "message": f"\u4efb\u52a1\u5df2\u5b58\u5728\uff0c\u8df3\u8fc7\u91cd\u590d\u6dfb\u52a0: {title}",
                     "data": result,
                 }
 
             if state:
-                logger.info(f"115离线下载添加成功: {title}")
+                logger.info(f"115\u79bb\u7ebf\u4e0b\u8f7d\u6dfb\u52a0\u6210\u529f: {title}")
                 self._record_offline_history(title, True)
-
-                # 从返回结果中提取 info_hash，加入轮询监控
-                data_items = result.get("data") or []
-                if isinstance(data_items, list):
-                    for item in data_items:
-                        if isinstance(item, dict):
-                            info_hash = item.get("info_hash") or ""
-                            if info_hash:
-                                self._pending_tasks[info_hash] = {
-                                    "name": item.get("name", title),
-                                    "title": title,
-                                    "add_time": time.time(),
-                                }
-                                logger.info(f"已加入离线完成轮询监控: {title} ({info_hash[:12]}...)")
-                # 启动后台轮询
-                self._start_polling()
-
+                _track_offline_task("added")
                 return {
                     "success": True,
-                    "message": f"已添加到115离线下载: {title}",
+                    "message": f"\u5df2\u6dfb\u52a0\u5230115\u79bb\u7ebf\u4e0b\u8f7d: {title}",
                     "data": result,
                 }
 
-            # 其他业务错误
             if not error_msg:
-                error_msg = f"未知错误 (errcode={errcode})" if errcode else "未知错误"
-            logger.error(f"115离线下载添加失败: {error_msg}")
+                error_msg = f"\u672a\u77e5\u9519\u8bef (errcode={errcode})" if errcode else "\u672a\u77e5\u9519\u8bef"
+            logger.error(f"115\u79bb\u7ebf\u4e0b\u8f7d\u6dfb\u52a0\u5931\u8d25: {error_msg}")
             self._record_offline_history(title, False, error_msg)
             return {
                 "success": False,
-                "message": f"添加失败: {error_msg}",
+                "message": f"\u6dfb\u52a0\u5931\u8d25: {error_msg}",
                 "data": result,
             }
 
         except Exception as e:
-            logger.error(f"115离线下载异常: {e}")
-            return {"success": False, "message": f"下载异常: {str(e)}"}
+            logger.error(f"115\u79bb\u7ebf\u4e0b\u8f7d\u5f02\u5e38: {e}")
+            return {"success": False, "message": f"\u4e0b\u8f7d\u5f02\u5e38: {str(e)}"}
 
     def _api_recursive_rename(self, data: dict = None) -> dict:
-        """API: 递归重命名115网盘目录内媒体文件（Open API + MP推荐命名）
-
-        使用 MoviePilot 的 MediaChain/TransferChain 生成推荐命名，使用115 Open API完成列目录、
-        重命名、建目录和移动，避免走 webapi batch_rename。
-        """
+        """API: recursively rename 115 media files with MP naming and 115 Open API."""
         if not self._enabled:
-            return {"success": False, "message": "插件未启用"}
+            return {"success": False, "message": "\u63d2\u4ef6\u672a\u542f\u7528"}
 
         if not self._p115_cookie:
-            return {"success": False, "message": "未配置115 Cookie"}
+            return {"success": False, "message": "\u672a\u914d\u7f6e115 Cookie"}
 
         data = data or {}
         cid = str(data.get("cid") or "").strip()
         new_name = str(data.get("new_name") or "").strip()
         if not cid:
-            return {"success": False, "message": "请提供cid"}
+            return {"success": False, "message": "\u8bf7\u63d0\u4f9bcid"}
 
         try:
             from app.chain.media import MediaChain
@@ -1497,7 +1504,6 @@ class ClSearch(_PluginBase):
                 client = P115Client(cookie)
 
             def _invoke_open(method_name: str, attempts: list) -> dict:
-                """Try P115OpenClient and client method variants for p115client version compatibility."""
                 funcs = []
                 method = getattr(P115OpenClient, method_name, None)
                 if method:
@@ -1520,7 +1526,7 @@ class ClSearch(_PluginBase):
                         if _is_api_ok(result):
                             return result
                         last_error = result
-                return {"state": False, "message": str(last_error) if last_error else f"{method_name} 调用失败"}
+                return {"state": False, "message": str(last_error) if last_error else f"{method_name} \u8c03\u7528\u5931\u8d25"}
 
             def _is_api_ok(result: dict) -> bool:
                 if not result or not isinstance(result, dict):
@@ -1557,7 +1563,6 @@ class ClSearch(_PluginBase):
                     return True
                 if str(item.get("type", "")).lower() in ("1", "folder", "dir", "directory"):
                     return True
-                # web/open responses may expose folder id as cid and file id as fid.
                 return bool(item.get("cid") and not item.get("fid") and str(item.get("cid")) != str(current_cid))
 
             def _open_list(folder_id: str, offset: int = 0) -> dict:
@@ -1633,7 +1638,7 @@ class ClSearch(_PluginBase):
                 while True:
                     list_result = _open_list(current_cid, offset)
                     if not _is_api_ok(list_result):
-                        return {"success": False, "message": f"列目录失败: {list_result}", "files": []}
+                        return {"success": False, "message": f"\u5217\u76ee\u5f55\u5931\u8d25: {list_result}", "files": []}
                     items = _extract_items(list_result)
                     if not items:
                         break
@@ -1659,9 +1664,9 @@ class ClSearch(_PluginBase):
                     offset += 1000
 
             if not all_files:
-                return {"success": False, "message": f"CID {cid} 下未找到媒体文件", "files": []}
+                return {"success": False, "message": f"CID {cid} \u4e0b\u672a\u627e\u5230\u5a92\u4f53\u6587\u4ef6", "files": []}
 
-            logger.info(f"找到 {len(all_files)} 个媒体文件，开始使用MP推荐命名...")
+            logger.info(f"\u627e\u5230 {len(all_files)} \u4e2a\u5a92\u4f53\u6587\u4ef6\uff0c\u5f00\u59cb\u4f7f\u7528MP\u63a8\u8350\u547d\u540d...")
             media_chain = MediaChain()
             transfer_chain = TransferChain()
             results = []
@@ -1676,18 +1681,18 @@ class ClSearch(_PluginBase):
                     virtual_path = Path(f"/{parent_path}/{file_name}" if parent_path else f"/{file_name}")
                     context = media_chain.recognize_by_path(virtual_path, obtain_images=False)
                     if not context or not context.media_info:
-                        results.append({"file_id": file_id, "old_name": file_name, "status": "识别失败"})
+                        results.append({"file_id": file_id, "old_name": file_name, "status": "\u8bc6\u522b\u5931\u8d25"})
                         continue
 
                     recommend_path = transfer_chain.recommend_name(meta=context.meta_info, mediainfo=context.media_info)
                     if not recommend_path:
-                        results.append({"file_id": file_id, "old_name": file_name, "status": "推荐名称为空"})
+                        results.append({"file_id": file_id, "old_name": file_name, "status": "\u63a8\u8350\u540d\u79f0\u4e3a\u7a7a"})
                         continue
 
                     rec_path = Path(recommend_path)
                     new_filename = rec_path.name
                     if not new_filename:
-                        results.append({"file_id": file_id, "old_name": file_name, "status": "推荐文件名为空"})
+                        results.append({"file_id": file_id, "old_name": file_name, "status": "\u63a8\u8350\u6587\u4ef6\u540d\u4e3a\u7a7a"})
                         continue
 
                     orig_ext = Path(file_name).suffix
@@ -1699,16 +1704,16 @@ class ClSearch(_PluginBase):
                     if len(rec_path.parts) > 2:
                         relative_dir = rec_path.parts[1]
 
-                    res = {"file_id": file_id, "old_name": file_name, "new_name": new_filename, "status": "待处理"}
+                    res = {"file_id": file_id, "old_name": file_name, "new_name": new_filename, "status": "\u5f85\u5904\u7406"}
                     results.append(res)
                     if new_filename != file_name:
                         rename_jobs.append((file_id, new_filename, res))
                     if relative_dir:
                         move_jobs.append((file_id, relative_dir, res))
                     if new_filename == file_name and not relative_dir:
-                        res["status"] = "无需修改"
+                        res["status"] = "\u65e0\u9700\u4fee\u6539"
                 except Exception as e:
-                    results.append({"file_id": file_id, "old_name": file_name, "status": f"识别异常: {str(e)[:80]}"})
+                    results.append({"file_id": file_id, "old_name": file_name, "status": f"\u8bc6\u522b\u5f02\u5e38: {str(e)[:80]}"})
 
             rename_success = 0
             rename_fail = 0
@@ -1716,10 +1721,10 @@ class ClSearch(_PluginBase):
                 rename_result = _open_rename(file_id, target_name)
                 if _is_api_ok(rename_result):
                     rename_success += 1
-                    res["status"] = "✅ 已重命名"
+                    res["status"] = "\u2705 \u5df2\u91cd\u547d\u540d"
                 else:
                     rename_fail += 1
-                    res["status"] = f"重命名失败: {rename_result}"
+                    res["status"] = f"\u91cd\u547d\u540d\u5931\u8d25: {rename_result}"
 
             dir_cid_map = dict(root_dirs)
             created_dirs = 0
@@ -1733,18 +1738,20 @@ class ClSearch(_PluginBase):
                     if target_cid:
                         dir_cid_map[dir_name] = target_cid
                         created_dirs += 1
-                        logger.info(f"创建子目录: {dir_name}, CID: {target_cid}")
+                        logger.info(f"\u521b\u5efa\u5b50\u76ee\u5f55: {dir_name}, CID: {target_cid}")
                     else:
                         move_fail += 1
-                        res["status"] = f"目录创建失败: {dir_name}, result={mkdir_result}"
+                        res["status"] = f"\u76ee\u5f55\u521b\u5efa\u5931\u8d25: {dir_name}, result={mkdir_result}"
                         continue
                 move_result = _open_move(file_id, target_cid)
                 if _is_api_ok(move_result):
                     move_success += 1
-                    res["status"] = f"{res.get('status', '已处理')} -> {dir_name}/"
+                    status_text = res.get("status") or "\u5df2\u5904\u7406"
+                    res["status"] = f"{status_text} -> {dir_name}/"
+                    res["status"] = f"{status_text} -> {dir_name}/"
                 else:
                     move_fail += 1
-                    res["status"] = f"移动失败: {move_result}"
+                    res["status"] = f"\u79fb\u52a8\u5931\u8d25: {move_result}"
 
             dir_renamed = False
             dir_rename_error = ""
@@ -1752,18 +1759,18 @@ class ClSearch(_PluginBase):
                 dir_result = _open_rename(cid, new_name)
                 if _is_api_ok(dir_result):
                     dir_renamed = True
-                    logger.info(f"目录已重命名为: {new_name}")
+                    logger.info(f"\u76ee\u5f55\u5df2\u91cd\u547d\u540d\u4e3a: {new_name}")
                 else:
-                    dir_rename_error = f"目录重命名失败: {dir_result}"
+                    dir_rename_error = f"\u76ee\u5f55\u91cd\u547d\u540d\u5931\u8d25: {dir_result}"
                     logger.error(dir_rename_error)
 
-            failed_statuses = [r for r in results if any(word in str(r.get("status", "")) for word in ("失败", "异常"))]
+            failed_statuses = [r for r in results if any(word in str(r.get("status", "")) for word in ("\u5931\u8d25", "\u5f02\u5e38"))]
             ok = rename_fail == 0 and move_fail == 0 and not dir_rename_error and not failed_statuses
-            msg = f"处理完成: 共 {len(all_files)} 个文件，重命名成功 {rename_success} 个，重命名失败 {rename_fail} 个，创建目录 {created_dirs} 个，移动成功 {move_success} 个，移动失败 {move_fail} 个"
+            msg = f"\u5904\u7406\u5b8c\u6210: \u5171 {len(all_files)} \u4e2a\u6587\u4ef6\uff0c\u91cd\u547d\u540d\u6210\u529f {rename_success} \u4e2a\uff0c\u91cd\u547d\u540d\u5931\u8d25 {rename_fail} \u4e2a\uff0c\u521b\u5efa\u76ee\u5f55 {created_dirs} \u4e2a\uff0c\u79fb\u52a8\u6210\u529f {move_success} \u4e2a\uff0c\u79fb\u52a8\u5931\u8d25 {move_fail} \u4e2a"
             if dir_renamed:
-                msg += f"，目录已重命名为: {new_name}"
+                msg += f"\uff0c\u76ee\u5f55\u5df2\u91cd\u547d\u540d\u4e3a: {new_name}"
             if dir_rename_error:
-                msg += f"，{dir_rename_error}"
+                msg += f"\uff0c{dir_rename_error}"
 
             return {
                 "success": ok,
@@ -1775,8 +1782,9 @@ class ClSearch(_PluginBase):
             }
 
         except Exception as e:
-            logger.error(f"递归重命名失败: {e}")
-            return {"success": False, "message": f"操作失败: {str(e)}", "files": []}
+            logger.error(f"\u9012\u5f52\u91cd\u547d\u540d\u5931\u8d25: {e}")
+            return {"success": False, "message": f"\u64cd\u4f5c\u5931\u8d25: {str(e)}", "files": []}
+
 
     @eventmanager.register(EventType.PluginAction)
     def handle_event(self, event: Event) -> None:
