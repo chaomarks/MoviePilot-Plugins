@@ -3,14 +3,14 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.5.3.2",
+    "version": "1.5.3.3",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
-      "v1.5.3.2": "Fix offline task tracking fallback, notify duplicate tasks, keep polling when info_hash is missing from response.",
-      "v1.5.3.1": "Restore offline download API and switch rename workflow to MP naming plus 115 Open API operations.",
-      "v1.5.3": "Use recursive rename workflow with media recognition, Season folders and batch file handling."
+      "v1.5.3.3": "修复通知类型兼容问题，重复磁力任务直接提示并结束，避免重复提交中断轮询。",
+      "v1.5.3.2": "修复离线任务轮询登记兜底，返回缺少info_hash时从磁力链接提取并继续监控。",
+      "v1.5.3.1": "恢复离线下载接口，重命名流程改为MP推荐命名加115 Open API操作。"
     }
   }
 }

@@ -39,7 +39,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.3.2"
+    plugin_version = "1.5.3.3"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1373,6 +1373,21 @@ class ClSearch(_PluginBase):
         if not (magnet.startswith("magnet:?") or magnet.startswith("http")):
             return {"success": False, "message": "\u4e0d\u652f\u6301\u7684\u94fe\u63a5\u683c\u5f0f\uff0c\u8bf7\u4f7f\u7528\u78c1\u529b\u94fe\u63a5(magnet:)\u6216HTTP\u94fe\u63a5"}
 
+        local_hash_match = re.search(r"btih:([A-Fa-f0-9]{32,40})", magnet, re.IGNORECASE)
+        local_info_hash = local_hash_match.group(1).lower() if local_hash_match else ""
+        if local_info_hash and local_info_hash in self._pending_tasks:
+            logger.info(f"\u79bb\u7ebf\u4efb\u52a1\u5df2\u5728\u8f6e\u8be2\u961f\u5217\u4e2d\uff0c\u8df3\u8fc7\u91cd\u590d\u63d0\u4ea4: {title} ({local_info_hash[:12]}...)")
+            self.post_message(
+                title="115\u79bb\u7ebf\u4efb\u52a1\u5df2\u5b58\u5728",
+                content=f"**{title}** \u5df2\u5728\u79bb\u7ebf\u76d1\u63a7\u961f\u5217\u4e2d\uff0c\u5df2\u7ed3\u675f\u672c\u6b21\u91cd\u590d\u63d0\u4ea4\u3002\ninfo_hash: `{local_info_hash}`",
+                notification_type=NotificationType.Plugin,
+            )
+            return {
+                "success": True,
+                "message": f"\u4efb\u52a1\u5df2\u5b58\u5728\uff0c\u5df2\u7ed3\u675f\u91cd\u590d\u63d0\u4ea4: {title}",
+                "data": {"info_hash": local_info_hash, "duplicate": True},
+            }
+
         try:
             save_dir_id = int(self._save_dir_id)
         except (ValueError, TypeError):
@@ -1447,7 +1462,7 @@ class ClSearch(_PluginBase):
                 self.post_message(
                     title="115\u79bb\u7ebf\u4efb\u52a1\u5df2\u5b58\u5728",
                     content=f"**{title}** \u5df2\u5728115\u79bb\u7ebf\u4efb\u52a1\u4e2d\uff0c\u5df2\u8df3\u8fc7\u91cd\u590d\u6dfb\u52a0\u3002" + (f"\ninfo_hash: `{tracked_hash}`" if tracked_hash else ""),
-                    notification_type=NotificationType.Information,
+                    notification_type=NotificationType.Plugin,
                 )
                 return {
                     "success": True,
@@ -1905,7 +1920,7 @@ class ClSearch(_PluginBase):
                     self.post_message(
                         title="115离线下载完成",
                         content=f"**{task_name}** 已离线下载完成",
-                        notification_type=NotificationType.Information,
+                        notification_type=NotificationType.Plugin,
                     )
                     # 触发自动整理
                     if self._auto_transfer:
@@ -2289,7 +2304,7 @@ class ClSearch(_PluginBase):
         self.post_message(
             title="观影搜结果",
             content="\n".join(content_parts),
-            notification_type=NotificationType.Information,
+            notification_type=NotificationType.Plugin,
         )
 
     def get_agent_tools(self) -> List[type]:
