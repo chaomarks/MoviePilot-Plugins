@@ -39,7 +39,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.3"
+    plugin_version = "1.5.3.1"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1348,231 +1348,435 @@ class ClSearch(_PluginBase):
         except Exception as e:
             return {"success": False, "message": f"获取文件列表失败: {str(e)}"}
 
-    def _api_recursive_rename(self, data: dict = None) -> dict:
-        """API: 递归重命名115网盘目录内媒体文件（智能识别命名）
-
-        类似 storage API 的 rename(recursive=True)，但直接操作115网盘文件。
-        遍历目录内所有媒体文件，使用 MoviePilot 识别引擎生成推荐文件名并重命名。
+    def _api_offline_download(self, data: dict = None) -> dict:
+        """API: 添加115离线下载
 
         Args:
-            data: 包含以下字段的字典：
-                - cid: 115目录ID（必填）
-                - new_name: 目录最终名称（可选，有值则在子文件重命名后重命名目录）
+            data: 下载信息，包含 magnet 和 title
 
         Returns:
-            含 success、message、files(结果列表) 的字典
+            含 success、message、data 的字典
         """
         if not self._enabled:
             return {"success": False, "message": "插件未启用"}
 
-        data = data or {}
-        cid = data.get("cid")
-        new_name = data.get("new_name", "")
+        if not self._p115_cookie:
+            return {"success": False, "message": "未配置115网盘Cookie"}
 
+        if not self._save_dir_id:
+            return {"success": False, "message": "未配置115离线下载目录ID"}
+
+        if not data:
+            return {"success": False, "message": "请提供下载信息"}
+
+        magnet = data.get("magnet") or ""
+        title = data.get("title") or ""
+
+        if not magnet:
+            return {"success": False, "message": "请提供有效的磁力链接"}
+
+        # 验证磁力链接格式（简单前缀检查）
+        magnet = magnet.strip()
+        if not (magnet.startswith("magnet:?") or magnet.startswith("http")):
+            return {"success": False, "message": "不支持的链接格式，请使用磁力链接(magnet:)或HTTP链接"}
+
+        # 验证目录ID是否为有效数字
+        try:
+            save_dir_id = int(self._save_dir_id)
+        except (ValueError, TypeError):
+            logger.error(f"无效的115目录ID: {self._save_dir_id}")
+            return {"success": False, "message": f"无效的115目录ID: {self._save_dir_id}，请检查配置"}
+
+        try:
+            p115_cookie = self._normalize_cookie(self._p115_cookie)
+            # 使用 p115client 库调用离线下载 API
+            # 必须使用 P115OpenClient 的方法（走 proapi.115.com/open/offline/add_task_urls）
+            # P115Client 的覆盖版本使用 clouddownload.115.com SSP 接口，对某些磁力链返回"错误的链接"
+            client = P115Client(p115_cookie)
+            payload = {
+                "urls": magnet,
+                "wp_path_id": save_dir_id,
+            }
+
+            logger.info(f"添加115离线下载: {title}, 目标目录CID: {save_dir_id}")
+
+            result = P115OpenClient.clouddownload_task_add_urls(client, payload)
+
+            # 检查返回结果（兼容 Open API 和 SSP API 两种格式）
+            state = result.get("state", False) if result else False
+            errcode = result.get("errcode") or result.get("code") if result else None
+            error_msg = (result.get("error_msg") or result.get("error") or
+                         result.get("message") or "")
+            # Open API 成功时 data 数组内也可能有单条失败
+            if state and not error_msg:
+                data_items = result.get("data") or []
+                if isinstance(data_items, list):
+                    for item in data_items:
+                        if isinstance(item, dict) and not item.get("state", True):
+                            state = False
+                            error_msg = item.get("message") or item.get("error_msg") or f"单条任务失败 (code={item.get('code')})"
+                            break
+
+            # 任务已存在（重复添加）
+            if errcode == 10008:
+                logger.info(f"115离线下载任务已存在: {title}")
+                self._record_offline_history(title, True)
+                return {
+                    "success": True,
+                    "message": f"任务已存在，跳过重复添加: {title}",
+                    "data": result,
+                }
+
+            if state:
+                logger.info(f"115离线下载添加成功: {title}")
+                self._record_offline_history(title, True)
+
+                # 从返回结果中提取 info_hash，加入轮询监控
+                data_items = result.get("data") or []
+                if isinstance(data_items, list):
+                    for item in data_items:
+                        if isinstance(item, dict):
+                            info_hash = item.get("info_hash") or ""
+                            if info_hash:
+                                self._pending_tasks[info_hash] = {
+                                    "name": item.get("name", title),
+                                    "title": title,
+                                    "add_time": time.time(),
+                                }
+                                logger.info(f"已加入离线完成轮询监控: {title} ({info_hash[:12]}...)")
+                # 启动后台轮询
+                self._start_polling()
+
+                return {
+                    "success": True,
+                    "message": f"已添加到115离线下载: {title}",
+                    "data": result,
+                }
+
+            # 其他业务错误
+            if not error_msg:
+                error_msg = f"未知错误 (errcode={errcode})" if errcode else "未知错误"
+            logger.error(f"115离线下载添加失败: {error_msg}")
+            self._record_offline_history(title, False, error_msg)
+            return {
+                "success": False,
+                "message": f"添加失败: {error_msg}",
+                "data": result,
+            }
+
+        except Exception as e:
+            logger.error(f"115离线下载异常: {e}")
+            return {"success": False, "message": f"下载异常: {str(e)}"}
+
+    def _api_recursive_rename(self, data: dict = None) -> dict:
+        """API: 递归重命名115网盘目录内媒体文件（Open API + MP推荐命名）
+
+        使用 MoviePilot 的 MediaChain/TransferChain 生成推荐命名，使用115 Open API完成列目录、
+        重命名、建目录和移动，避免走 webapi batch_rename。
+        """
+        if not self._enabled:
+            return {"success": False, "message": "插件未启用"}
+
+        if not self._p115_cookie:
+            return {"success": False, "message": "未配置115 Cookie"}
+
+        data = data or {}
+        cid = str(data.get("cid") or "").strip()
+        new_name = str(data.get("new_name") or "").strip()
         if not cid:
             return {"success": False, "message": "请提供cid"}
 
         try:
-            from p115client import P115Client
             from app.chain.media import MediaChain
             from app.chain.transfer import TransferChain
 
-            cookie = self._p115_cookie
-            if not cookie:
-                return {"success": False, "message": "未配置115 Cookie"}
+            cookie = self._normalize_cookie(self._p115_cookie)
+            try:
+                client = P115Client(cookies=cookie)
+            except TypeError:
+                client = P115Client(cookie)
 
-            client = P115Client(cookies=cookie)
+            def _invoke_open(method_name: str, attempts: list) -> dict:
+                """Try P115OpenClient and client method variants for p115client version compatibility."""
+                funcs = []
+                method = getattr(P115OpenClient, method_name, None)
+                if method:
+                    funcs.append(lambda *args, **kwargs: method(client, *args, **kwargs))
+                client_method = getattr(client, method_name, None)
+                if client_method:
+                    funcs.append(client_method)
 
-            # 递归收集所有文件
-            all_files = []  # [(file_id, file_name, parent_path)]
-            dir_stack = [(str(cid), "")]
+                last_error = None
+                for func in funcs:
+                    for args, kwargs in attempts:
+                        try:
+                            result = func(*args, **kwargs)
+                        except TypeError as e:
+                            last_error = e
+                            continue
+                        except Exception as e:
+                            last_error = e
+                            continue
+                        if _is_api_ok(result):
+                            return result
+                        last_error = result
+                return {"state": False, "message": str(last_error) if last_error else f"{method_name} 调用失败"}
+
+            def _is_api_ok(result: dict) -> bool:
+                if not result or not isinstance(result, dict):
+                    return False
+                if result.get("error") or result.get("errno") or result.get("errcode"):
+                    return False
+                if result.get("state") is False or result.get("success") is False:
+                    return False
+                return True
+
+            def _extract_items(result: dict) -> list:
+                data_obj = result.get("data") if isinstance(result, dict) else None
+                if isinstance(data_obj, list):
+                    return data_obj
+                if isinstance(data_obj, dict):
+                    for key in ("list", "items", "files", "data"):
+                        value = data_obj.get(key)
+                        if isinstance(value, list):
+                            return value
+                for key in ("list", "items", "files"):
+                    value = result.get(key) if isinstance(result, dict) else None
+                    if isinstance(value, list):
+                        return value
+                return []
+
+            def _item_name(item: dict) -> str:
+                return str(item.get("n") or item.get("name") or item.get("file_name") or item.get("filename") or "")
+
+            def _item_id(item: dict) -> str:
+                return str(item.get("fid") or item.get("file_id") or item.get("id") or item.get("cid") or "")
+
+            def _is_dir_item(item: dict, current_cid: str) -> bool:
+                if item.get("is_dir") in (True, 1, "1"):
+                    return True
+                if str(item.get("type", "")).lower() in ("1", "folder", "dir", "directory"):
+                    return True
+                # web/open responses may expose folder id as cid and file id as fid.
+                return bool(item.get("cid") and not item.get("fid") and str(item.get("cid")) != str(current_cid))
+
+            def _open_list(folder_id: str, offset: int = 0) -> dict:
+                payloads = [
+                    {"cid": str(folder_id), "limit": 1000, "offset": offset},
+                    {"file_id": str(folder_id), "limit": 1000, "offset": offset},
+                    {"parent_id": str(folder_id), "limit": 1000, "offset": offset},
+                ]
+                attempts = []
+                for payload in payloads:
+                    attempts.extend([((payload,), {}), ((), payload)])
+                return _invoke_open("fs_files_open", attempts)
+
+            def _open_rename(file_id: str, file_name: str) -> dict:
+                payloads = [
+                    {"file_id": str(file_id), "file_name": file_name},
+                    {"file_id": str(file_id), "name": file_name},
+                    {"fid": str(file_id), "file_name": file_name},
+                    {"fid": str(file_id), "name": file_name},
+                ]
+                attempts = [((str(file_id), file_name), {})]
+                for payload in payloads:
+                    attempts.extend([((payload,), {}), ((), payload)])
+                return _invoke_open("fs_rename_open", attempts)
+
+            def _open_mkdir(parent_id: str, dir_name: str) -> dict:
+                payloads = [
+                    {"parent_id": str(parent_id), "file_name": dir_name},
+                    {"parent_id": str(parent_id), "name": dir_name},
+                    {"pid": str(parent_id), "cname": dir_name},
+                    {"cid": str(parent_id), "name": dir_name},
+                ]
+                attempts = [((str(parent_id), dir_name), {})]
+                for payload in payloads:
+                    attempts.extend([((payload,), {}), ((), payload)])
+                return _invoke_open("fs_mkdir_open", attempts)
+
+            def _open_move(file_id: str, target_parent_id: str) -> dict:
+                payloads = [
+                    {"file_id": str(file_id), "parent_id": str(target_parent_id)},
+                    {"file_id": str(file_id), "to_parent_id": str(target_parent_id)},
+                    {"fid": str(file_id), "pid": str(target_parent_id)},
+                    {"fid": str(file_id), "target_cid": str(target_parent_id)},
+                ]
+                attempts = [((str(file_id),), {"pid": str(target_parent_id)}), ((str(file_id),), {"parent_id": str(target_parent_id)})]
+                for payload in payloads:
+                    attempts.extend([((payload,), {}), ((), payload)])
+                return _invoke_open("fs_move_open", attempts)
+
+            def _created_dir_id(result: dict) -> str:
+                for key in ("file_id", "cid", "id"):
+                    if result.get(key):
+                        return str(result[key])
+                data_obj = result.get("data") if isinstance(result, dict) else None
+                if isinstance(data_obj, dict):
+                    for key in ("file_id", "cid", "id"):
+                        if data_obj.get(key):
+                            return str(data_obj[key])
+                return ""
+
+            media_exts = ('.mkv', '.mp4', '.avi', '.ts', '.rmvb', '.flv', '.wmv', '.mov', '.m4v', '.iso', '.strm')
+            all_files = []
+            root_dirs = {}
+            visited_dirs = set()
+            dir_stack = [(cid, "")]
 
             while dir_stack:
                 current_cid, parent_path = dir_stack.pop()
+                if current_cid in visited_dirs:
+                    continue
+                visited_dirs.add(current_cid)
                 offset = 0
                 while True:
-                    result = client.fs_files({"cid": current_cid, "limit": 1000, "offset": offset})
-                    if not result.get("data"):
+                    list_result = _open_list(current_cid, offset)
+                    if not _is_api_ok(list_result):
+                        return {"success": False, "message": f"列目录失败: {list_result}", "files": []}
+                    items = _extract_items(list_result)
+                    if not items:
                         break
-                    for item in result["data"]:
-                        item_name = item.get("n") or item.get("name") or ""
-                        item_id = item.get("fid") or item.get("file_id") or item.get("cid")
-                        if not item_id or not item_name:
+                    for item in items:
+                        item_name = _item_name(item)
+                        if not item_name:
                             continue
-                        if item.get("cid") and str(item["cid"]) != "0" and str(item["cid"]) != current_cid:
-                            # 是目录（cid 不同于当前目录说明是子目录），加入栈继续遍历
+                        if _is_dir_item(item, current_cid):
+                            dir_id = str(item.get("cid") or item.get("file_id") or item.get("id") or "")
+                            if not dir_id:
+                                continue
+                            if current_cid == cid:
+                                root_dirs[item_name] = dir_id
                             sub_path = f"{parent_path}/{item_name}" if parent_path else item_name
-                            dir_stack.append((str(item["cid"]), sub_path))
-                        elif item_name.lower().endswith(('.mkv', '.mp4', '.avi', '.ts', '.rmvb', '.flv', '.wmv', '.mov', '.m4v', '.iso', '.strm')):
-                            all_files.append((item_id, item_name, parent_path))
-                    if len(result["data"]) < 1000:
+                            dir_stack.append((dir_id, sub_path))
+                            continue
+                        if item_name.lower().endswith(media_exts):
+                            file_id = _item_id(item)
+                            if file_id:
+                                all_files.append({"file_id": file_id, "name": item_name, "parent_path": parent_path})
+                    if len(items) < 1000:
                         break
                     offset += 1000
 
             if not all_files:
-                return {"success": False, "message": f"CID {cid} 下未找到媒体文件"}
+                return {"success": False, "message": f"CID {cid} 下未找到媒体文件", "files": []}
 
-            logger.info(f"找到 {len(all_files)} 个媒体文件，开始识别重命名...")
-
+            logger.info(f"找到 {len(all_files)} 个媒体文件，开始使用MP推荐命名...")
             media_chain = MediaChain()
             transfer_chain = TransferChain()
-            rename_map = {}  # {file_id: new_name}
             results = []
-            # 记录每个文件的推荐子目录路径 {"file_id": "Season 01"} 用于后续创建目录和移动
-            file_dir_map = {}
+            rename_jobs = []
+            move_jobs = []
 
-            for file_id, file_name, parent_path in all_files:
+            for file_item in all_files:
+                file_id = file_item["file_id"]
+                file_name = file_item["name"]
+                parent_path = file_item["parent_path"]
                 try:
-                    # 构造虚拟路径用于识别
                     virtual_path = Path(f"/{parent_path}/{file_name}" if parent_path else f"/{file_name}")
                     context = media_chain.recognize_by_path(virtual_path, obtain_images=False)
                     if not context or not context.media_info:
                         results.append({"file_id": file_id, "old_name": file_name, "status": "识别失败"})
                         continue
 
-                    meta = context.meta_info
-                    mediainfo = context.media_info
-
-                    # 获取推荐名称（返回完整相对路径如 "标题 (年份)/Season X/文件名.mkv"）
-                    recommend_path = transfer_chain.recommend_name(meta=meta, mediainfo=mediainfo)
+                    recommend_path = transfer_chain.recommend_name(meta=context.meta_info, mediainfo=context.media_info)
                     if not recommend_path:
                         results.append({"file_id": file_id, "old_name": file_name, "status": "推荐名称为空"})
                         continue
 
-                    # 提取子目录部分（如 "Season 01"）和纯文件名
                     rec_path = Path(recommend_path)
                     new_filename = rec_path.name
                     if not new_filename:
                         results.append({"file_id": file_id, "old_name": file_name, "status": "推荐文件名为空"})
                         continue
 
-                    # 获取 Season 子目录部分（如 "Season 01"），不含外层剧名目录
+                    orig_ext = Path(file_name).suffix
+                    rec_ext = Path(new_filename).suffix
+                    if orig_ext and rec_ext and orig_ext.lower() != rec_ext.lower():
+                        new_filename = new_filename[:-len(rec_ext)] + orig_ext
+
                     relative_dir = ""
                     if len(rec_path.parts) > 2:
-                        # parts[0]=剧名, parts[1:-1]=Season目录, parts[-1]=文件名
-                        # 只取 Season 部分，不包含外层剧名
-                        relative_dir = rec_path.parts[1] if len(rec_path.parts) > 2 else ""
+                        relative_dir = rec_path.parts[1]
 
-                    # 恢复原扩展名（recommend_name 可能改扩展名）
-                    orig_ext = Path(file_name).suffix.lower()
-                    rec_ext = Path(new_filename).suffix.lower()
-                    if rec_ext and orig_ext and rec_ext != orig_ext:
-                        new_filename = new_filename[:len(new_filename)-len(rec_ext)] + orig_ext
-
-                    # 如果名称没变且无需移动到子目录，跳过
-                    if new_filename == file_name and not relative_dir:
-                        results.append({"file_id": file_id, "old_name": file_name, "new_name": file_name, "status": "无需修改"})
-                        continue
-
-                    rename_map[file_id] = new_filename
+                    res = {"file_id": file_id, "old_name": file_name, "new_name": new_filename, "status": "待处理"}
+                    results.append(res)
+                    if new_filename != file_name:
+                        rename_jobs.append((file_id, new_filename, res))
                     if relative_dir:
-                        file_dir_map[file_id] = relative_dir
-                    results.append({"file_id": file_id, "old_name": file_name, "new_name": new_filename, "status": "待重命名"})
-
+                        move_jobs.append((file_id, relative_dir, res))
+                    if new_filename == file_name and not relative_dir:
+                        res["status"] = "无需修改"
                 except Exception as e:
-                    results.append({"file_id": file_id, "old_name": file_name, "status": f"识别异常: {str(e)[:50]}"})
+                    results.append({"file_id": file_id, "old_name": file_name, "status": f"识别异常: {str(e)[:80]}"})
 
-            # 批量重命名（fs_rename 传入 dict 时不会自动包装 files_new_name[] 前缀，需手动包装）
             rename_success = 0
             rename_fail = 0
-            if rename_map:
-                rename_payload = {f"files_new_name[{fid}]": name for fid, name in rename_map.items()}
-                batch_result = client.fs_rename(rename_payload)
-                if batch_result.get("error"):
-                    logger.error(f"批量重命名失败: {batch_result}")
-                    # 尝试逐个重命名
-                    for fid, fname in rename_map.items():
-                        try:
-                            r = client.fs_rename({f"files_new_name[{fid}]": fname})
-                            if not r.get("error"):
-                                rename_success += 1
-                            else:
-                                rename_fail += 1
-                                for res in results:
-                                    if res.get("file_id") == fid:
-                                        res["status"] = f"重命名失败: {r.get('error')}"
-                        except Exception:
-                            rename_fail += 1
+            for file_id, target_name, res in rename_jobs:
+                rename_result = _open_rename(file_id, target_name)
+                if _is_api_ok(rename_result):
+                    rename_success += 1
+                    res["status"] = "✅ 已重命名"
                 else:
-                    rename_success = len(rename_map)
-                    for res in results:
-                        if res.get("status") == "待重命名":
-                            res["status"] = "✅ 已重命名"
+                    rename_fail += 1
+                    res["status"] = f"重命名失败: {rename_result}"
 
-            # 如果有文件需要移到子目录（如 Season 01），在115上创建目录并移动
-            if file_dir_map:
-                # 收集需要创建的子目录名称（去重）
-                sub_dirs = set(file_dir_map.values())
-                # 为每个子目录创建 CID 映射: {"Season 01": "12345678"}
-                dir_cid_map = {}
-                for dir_name in sorted(sub_dirs):
-                    try:
-                        mkdir_result = client.fs_mkdir({"pid": cid, "cname": dir_name})
-                        if mkdir_result and mkdir_result.get("file_id"):
-                            dir_cid_map[dir_name] = str(mkdir_result["file_id"])
-                            logger.info(f"创建子目录: {dir_name}, CID: {mkdir_result['file_id']}")
-                        elif mkdir_result and mkdir_result.get("cid"):
-                            dir_cid_map[dir_name] = str(mkdir_result["cid"])
-                            logger.info(f"创建子目录: {dir_name}, CID: {mkdir_result['cid']}")
-                        else:
-                            logger.warning(f"创建子目录失败: {dir_name}, result={mkdir_result}")
-                    except Exception as e:
-                        logger.warning(f"创建子目录异常: {dir_name}: {e}")
-
-                # 移动文件到对应子目录
-                move_success = 0
-                move_fail = 0
-                for file_id, dir_name in file_dir_map.items():
-                    target_cid = dir_cid_map.get(dir_name)
-                    if not target_cid:
-                        move_fail += 1
-                        for res in results:
-                            if res.get("file_id") == file_id:
-                                res["status"] += f" (目录{dir_name}创建失败)"
-                        continue
-                    try:
-                        move_result = client.fs_move(file_id, pid=target_cid)
-                        if move_result and not move_result.get("error"):
-                            move_success += 1
-                            for res in results:
-                                if res.get("file_id") == file_id:
-                                    res["status"] += f" → {dir_name}/"
-                        else:
-                            move_fail += 1
-                            logger.warning(f"移动文件失败: file_id={file_id}, to={dir_name}, result={move_result}")
-                    except Exception as e:
-                        move_fail += 1
-                        logger.warning(f"移动文件异常: file_id={file_id}: {e}")
-
-                if move_success > 0:
-                    logger.info(f"移动文件到子目录: 成功 {move_success} 个, 失败 {move_fail} 个")
-
-            # 重命名目录
-            dir_renamed = False
-            if new_name:
-                try:
-                    dir_result = client.fs_rename({f"files_new_name[{cid}]": new_name})
-                    if not dir_result.get("error"):
-                        dir_renamed = True
-                        logger.info(f"目录已重命名为: {new_name}")
+            dir_cid_map = dict(root_dirs)
+            created_dirs = 0
+            move_success = 0
+            move_fail = 0
+            for file_id, dir_name, res in move_jobs:
+                target_cid = dir_cid_map.get(dir_name)
+                if not target_cid:
+                    mkdir_result = _open_mkdir(cid, dir_name)
+                    target_cid = _created_dir_id(mkdir_result) if _is_api_ok(mkdir_result) else ""
+                    if target_cid:
+                        dir_cid_map[dir_name] = target_cid
+                        created_dirs += 1
+                        logger.info(f"创建子目录: {dir_name}, CID: {target_cid}")
                     else:
-                        logger.error(f"目录重命名失败: {dir_result}")
-                except Exception as e:
-                    logger.error(f"目录重命名异常: {e}")
+                        move_fail += 1
+                        res["status"] = f"目录创建失败: {dir_name}, result={mkdir_result}"
+                        continue
+                move_result = _open_move(file_id, target_cid)
+                if _is_api_ok(move_result):
+                    move_success += 1
+                    res["status"] = f"{res.get('status', '已处理')} -> {dir_name}/"
+                else:
+                    move_fail += 1
+                    res["status"] = f"移动失败: {move_result}"
 
-            msg = f"处理完成: 共 {len(all_files)} 个文件，重命名成功 {rename_success} 个，失败 {rename_fail} 个"
+            dir_renamed = False
+            dir_rename_error = ""
+            if new_name:
+                dir_result = _open_rename(cid, new_name)
+                if _is_api_ok(dir_result):
+                    dir_renamed = True
+                    logger.info(f"目录已重命名为: {new_name}")
+                else:
+                    dir_rename_error = f"目录重命名失败: {dir_result}"
+                    logger.error(dir_rename_error)
+
+            failed_statuses = [r for r in results if any(word in str(r.get("status", "")) for word in ("失败", "异常"))]
+            ok = rename_fail == 0 and move_fail == 0 and not dir_rename_error and not failed_statuses
+            msg = f"处理完成: 共 {len(all_files)} 个文件，重命名成功 {rename_success} 个，重命名失败 {rename_fail} 个，创建目录 {created_dirs} 个，移动成功 {move_success} 个，移动失败 {move_fail} 个"
             if dir_renamed:
                 msg += f"，目录已重命名为: {new_name}"
+            if dir_rename_error:
+                msg += f"，{dir_rename_error}"
 
             return {
-                "success": True,
+                "success": ok,
                 "message": msg,
                 "files": results,
+                "renamed": rename_success,
+                "created_dirs": created_dirs,
+                "moved": move_success,
             }
 
         except Exception as e:
             logger.error(f"递归重命名失败: {e}")
-            return {"success": False, "message": f"操作失败: {str(e)}"}
+            return {"success": False, "message": f"操作失败: {str(e)}", "files": []}
 
     @eventmanager.register(EventType.PluginAction)
     def handle_event(self, event: Event) -> None:
@@ -1821,6 +2025,26 @@ class ClSearch(_PluginBase):
                 "new_name": new_folder_name,
             })
             logger.info(f"重命名结果: {rename_result.get('message', '未知')}")
+            if not rename_result.get("success"):
+                self.post_message(
+                    title="115重命名失败",
+                    content=(
+                        f"**{task_name}** 重命名失败，已停止后续自动整理。\n"
+                        f"CID: `{folder_cid}`\n"
+                        f"错误: {rename_result.get('message', '未知错误')}"
+                    ),
+                    notification_type=NotificationType.Warning,
+                )
+                self._record_pending_task(task_name, f"{self._resolved_path}/{task_name}", {
+                    "rename_result": rename_result.get("message"),
+                    "media_type": media_type,
+                    "title": title,
+                    "year": year,
+                    "tmdb_id": tmdb_id,
+                    "folder_cid": folder_cid,
+                    "rename_failed": True,
+                })
+                return
 
             # Step 4: 查询目标目录并记录待整理任务（供智能体后续处理广告删除和移动）
             final_path = f"{self._resolved_path}/{new_folder_name}"
