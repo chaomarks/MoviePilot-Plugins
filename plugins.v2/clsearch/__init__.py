@@ -39,7 +39,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.3.3"
+    plugin_version = "1.5.3.4"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -1494,312 +1494,89 @@ class ClSearch(_PluginBase):
             logger.error(f"115\u79bb\u7ebf\u4e0b\u8f7d\u5f02\u5e38: {e}")
             return {"success": False, "message": f"\u4e0b\u8f7d\u5f02\u5e38: {str(e)}"}
 
+
+
     def _api_recursive_rename(self, data: dict = None) -> dict:
-        """API: recursively rename 115 media files with MP naming and 115 Open API."""
+        """API: use MoviePilot built-in storage rename for U115 paths."""
         if not self._enabled:
             return {"success": False, "message": "\u63d2\u4ef6\u672a\u542f\u7528"}
 
-        if not self._p115_cookie:
-            return {"success": False, "message": "\u672a\u914d\u7f6e115 Cookie"}
-
         data = data or {}
-        cid = str(data.get("cid") or "").strip()
+        file_path = str(data.get("path") or data.get("file_path") or "").strip()
         new_name = str(data.get("new_name") or "").strip()
-        if not cid:
-            return {"success": False, "message": "\u8bf7\u63d0\u4f9bcid"}
+        cid = str(data.get("cid") or "").strip()
+
+        if not file_path:
+            if not cid:
+                return {"success": False, "message": "\u8bf7\u63d0\u4f9bU115\u8def\u5f84\u6216cid"}
+            if not self._resolved_path:
+                return {"success": False, "message": "\u672a\u89e3\u6790\u79bb\u7ebf\u76ee\u5f55\u8def\u5f84\uff0c\u65e0\u6cd5\u901a\u8fc7cid\u6784\u9020U115\u8def\u5f84"}
+            file_path = str(data.get("name") or "").strip()
+            if file_path:
+                file_path = f"{self._resolved_path.rstrip('/')}/{file_path}"
+            else:
+                return {"success": False, "message": "\u4ec5\u63d0\u4f9bcid\u4e0d\u8db3\u4ee5\u8c03\u7528MP\u5185\u7f6e\u91cd\u547d\u540d\uff0c\u8bf7\u540c\u65f6\u63d0\u4f9bpath\u6216name"}
+
+        if not new_name:
+            new_name = Path(file_path).name
 
         try:
-            from app.chain.media import MediaChain
-            from app.chain.transfer import TransferChain
+            from app.schemas import FileItem
+        except Exception:
+            FileItem = None
 
-            cookie = self._normalize_cookie(self._p115_cookie)
-            try:
-                client = P115Client(cookies=cookie)
-            except TypeError:
-                client = P115Client(cookie)
+        try:
+            from app.chain.storage import StorageChain
+        except Exception as e:
+            return {"success": False, "message": f"\u65e0\u6cd5\u52a0\u8f7dMP\u5185\u7f6e\u5b58\u50a8\u94fe\u8def: {e}"}
 
-            def _invoke_open(method_name: str, attempts: list) -> dict:
-                funcs = []
-                method = getattr(P115OpenClient, method_name, None)
-                if method:
-                    funcs.append(lambda *args, **kwargs: method(client, *args, **kwargs))
-                client_method = getattr(client, method_name, None)
-                if client_method:
-                    funcs.append(client_method)
-
-                last_error = None
-                for func in funcs:
-                    for args, kwargs in attempts:
-                        try:
-                            result = func(*args, **kwargs)
-                        except TypeError as e:
-                            last_error = e
-                            continue
-                        except Exception as e:
-                            last_error = e
-                            continue
-                        if _is_api_ok(result):
-                            return result
-                        last_error = result
-                return {"state": False, "message": str(last_error) if last_error else f"{method_name} \u8c03\u7528\u5931\u8d25"}
-
-            def _is_api_ok(result: dict) -> bool:
-                if not result or not isinstance(result, dict):
-                    return False
-                if result.get("error") or result.get("errno") or result.get("errcode"):
-                    return False
-                if result.get("state") is False or result.get("success") is False:
-                    return False
-                return True
-
-            def _extract_items(result: dict) -> list:
-                data_obj = result.get("data") if isinstance(result, dict) else None
-                if isinstance(data_obj, list):
-                    return data_obj
-                if isinstance(data_obj, dict):
-                    for key in ("list", "items", "files", "data"):
-                        value = data_obj.get(key)
-                        if isinstance(value, list):
-                            return value
-                for key in ("list", "items", "files"):
-                    value = result.get(key) if isinstance(result, dict) else None
-                    if isinstance(value, list):
-                        return value
-                return []
-
-            def _item_name(item: dict) -> str:
-                return str(item.get("n") or item.get("name") or item.get("file_name") or item.get("filename") or "")
-
-            def _item_id(item: dict) -> str:
-                return str(item.get("fid") or item.get("file_id") or item.get("id") or item.get("cid") or "")
-
-            def _is_dir_item(item: dict, current_cid: str) -> bool:
-                if item.get("is_dir") in (True, 1, "1"):
-                    return True
-                if str(item.get("type", "")).lower() in ("1", "folder", "dir", "directory"):
-                    return True
-                return bool(item.get("cid") and not item.get("fid") and str(item.get("cid")) != str(current_cid))
-
-            def _open_list(folder_id: str, offset: int = 0) -> dict:
-                payloads = [
-                    {"cid": str(folder_id), "limit": 1000, "offset": offset},
-                    {"file_id": str(folder_id), "limit": 1000, "offset": offset},
-                    {"parent_id": str(folder_id), "limit": 1000, "offset": offset},
-                ]
-                attempts = []
-                for payload in payloads:
-                    attempts.extend([((payload,), {}), ((), payload)])
-                return _invoke_open("fs_files_open", attempts)
-
-            def _open_rename(file_id: str, file_name: str) -> dict:
-                payloads = [
-                    {"file_id": str(file_id), "file_name": file_name},
-                    {"file_id": str(file_id), "name": file_name},
-                    {"fid": str(file_id), "file_name": file_name},
-                    {"fid": str(file_id), "name": file_name},
-                ]
-                attempts = [((str(file_id), file_name), {})]
-                for payload in payloads:
-                    attempts.extend([((payload,), {}), ((), payload)])
-                return _invoke_open("fs_rename_open", attempts)
-
-            def _open_mkdir(parent_id: str, dir_name: str) -> dict:
-                payloads = [
-                    {"parent_id": str(parent_id), "file_name": dir_name},
-                    {"parent_id": str(parent_id), "name": dir_name},
-                    {"pid": str(parent_id), "cname": dir_name},
-                    {"cid": str(parent_id), "name": dir_name},
-                ]
-                attempts = [((str(parent_id), dir_name), {})]
-                for payload in payloads:
-                    attempts.extend([((payload,), {}), ((), payload)])
-                return _invoke_open("fs_mkdir_open", attempts)
-
-            def _open_move(file_id: str, target_parent_id: str) -> dict:
-                payloads = [
-                    {"file_id": str(file_id), "parent_id": str(target_parent_id)},
-                    {"file_id": str(file_id), "to_parent_id": str(target_parent_id)},
-                    {"fid": str(file_id), "pid": str(target_parent_id)},
-                    {"fid": str(file_id), "target_cid": str(target_parent_id)},
-                ]
-                attempts = [((str(file_id),), {"pid": str(target_parent_id)}), ((str(file_id),), {"parent_id": str(target_parent_id)})]
-                for payload in payloads:
-                    attempts.extend([((payload,), {}), ((), payload)])
-                return _invoke_open("fs_move_open", attempts)
-
-            def _created_dir_id(result: dict) -> str:
-                for key in ("file_id", "cid", "id"):
-                    if result.get(key):
-                        return str(result[key])
-                data_obj = result.get("data") if isinstance(result, dict) else None
-                if isinstance(data_obj, dict):
-                    for key in ("file_id", "cid", "id"):
-                        if data_obj.get(key):
-                            return str(data_obj[key])
-                return ""
-
-            media_exts = ('.mkv', '.mp4', '.avi', '.ts', '.rmvb', '.flv', '.wmv', '.mov', '.m4v', '.iso', '.strm')
-            all_files = []
-            root_dirs = {}
-            visited_dirs = set()
-            dir_stack = [(cid, "")]
-
-            while dir_stack:
-                current_cid, parent_path = dir_stack.pop()
-                if current_cid in visited_dirs:
-                    continue
-                visited_dirs.add(current_cid)
-                offset = 0
-                while True:
-                    list_result = _open_list(current_cid, offset)
-                    if not _is_api_ok(list_result):
-                        return {"success": False, "message": f"\u5217\u76ee\u5f55\u5931\u8d25: {list_result}", "files": []}
-                    items = _extract_items(list_result)
-                    if not items:
-                        break
-                    for item in items:
-                        item_name = _item_name(item)
-                        if not item_name:
-                            continue
-                        if _is_dir_item(item, current_cid):
-                            dir_id = str(item.get("cid") or item.get("file_id") or item.get("id") or "")
-                            if not dir_id:
-                                continue
-                            if current_cid == cid:
-                                root_dirs[item_name] = dir_id
-                            sub_path = f"{parent_path}/{item_name}" if parent_path else item_name
-                            dir_stack.append((dir_id, sub_path))
-                            continue
-                        if item_name.lower().endswith(media_exts):
-                            file_id = _item_id(item)
-                            if file_id:
-                                all_files.append({"file_id": file_id, "name": item_name, "parent_path": parent_path})
-                    if len(items) < 1000:
-                        break
-                    offset += 1000
-
-            if not all_files:
-                return {"success": False, "message": f"CID {cid} \u4e0b\u672a\u627e\u5230\u5a92\u4f53\u6587\u4ef6", "files": []}
-
-            logger.info(f"\u627e\u5230 {len(all_files)} \u4e2a\u5a92\u4f53\u6587\u4ef6\uff0c\u5f00\u59cb\u4f7f\u7528MP\u63a8\u8350\u547d\u540d...")
-            media_chain = MediaChain()
-            transfer_chain = TransferChain()
-            results = []
-            rename_jobs = []
-            move_jobs = []
-
-            for file_item in all_files:
-                file_id = file_item["file_id"]
-                file_name = file_item["name"]
-                parent_path = file_item["parent_path"]
-                try:
-                    virtual_path = Path(f"/{parent_path}/{file_name}" if parent_path else f"/{file_name}")
-                    context = media_chain.recognize_by_path(virtual_path, obtain_images=False)
-                    if not context or not context.media_info:
-                        results.append({"file_id": file_id, "old_name": file_name, "status": "\u8bc6\u522b\u5931\u8d25"})
-                        continue
-
-                    recommend_path = transfer_chain.recommend_name(meta=context.meta_info, mediainfo=context.media_info)
-                    if not recommend_path:
-                        results.append({"file_id": file_id, "old_name": file_name, "status": "\u63a8\u8350\u540d\u79f0\u4e3a\u7a7a"})
-                        continue
-
-                    rec_path = Path(recommend_path)
-                    new_filename = rec_path.name
-                    if not new_filename:
-                        results.append({"file_id": file_id, "old_name": file_name, "status": "\u63a8\u8350\u6587\u4ef6\u540d\u4e3a\u7a7a"})
-                        continue
-
-                    orig_ext = Path(file_name).suffix
-                    rec_ext = Path(new_filename).suffix
-                    if orig_ext and rec_ext and orig_ext.lower() != rec_ext.lower():
-                        new_filename = new_filename[:-len(rec_ext)] + orig_ext
-
-                    relative_dir = ""
-                    if len(rec_path.parts) > 2:
-                        relative_dir = rec_path.parts[1]
-
-                    res = {"file_id": file_id, "old_name": file_name, "new_name": new_filename, "status": "\u5f85\u5904\u7406"}
-                    results.append(res)
-                    if new_filename != file_name:
-                        rename_jobs.append((file_id, new_filename, res))
-                    if relative_dir:
-                        move_jobs.append((file_id, relative_dir, res))
-                    if new_filename == file_name and not relative_dir:
-                        res["status"] = "\u65e0\u9700\u4fee\u6539"
-                except Exception as e:
-                    results.append({"file_id": file_id, "old_name": file_name, "status": f"\u8bc6\u522b\u5f02\u5e38: {str(e)[:80]}"})
-
-            rename_success = 0
-            rename_fail = 0
-            for file_id, target_name, res in rename_jobs:
-                rename_result = _open_rename(file_id, target_name)
-                if _is_api_ok(rename_result):
-                    rename_success += 1
-                    res["status"] = "\u2705 \u5df2\u91cd\u547d\u540d"
-                else:
-                    rename_fail += 1
-                    res["status"] = f"\u91cd\u547d\u540d\u5931\u8d25: {rename_result}"
-
-            dir_cid_map = dict(root_dirs)
-            created_dirs = 0
-            move_success = 0
-            move_fail = 0
-            for file_id, dir_name, res in move_jobs:
-                target_cid = dir_cid_map.get(dir_name)
-                if not target_cid:
-                    mkdir_result = _open_mkdir(cid, dir_name)
-                    target_cid = _created_dir_id(mkdir_result) if _is_api_ok(mkdir_result) else ""
-                    if target_cid:
-                        dir_cid_map[dir_name] = target_cid
-                        created_dirs += 1
-                        logger.info(f"\u521b\u5efa\u5b50\u76ee\u5f55: {dir_name}, CID: {target_cid}")
-                    else:
-                        move_fail += 1
-                        res["status"] = f"\u76ee\u5f55\u521b\u5efa\u5931\u8d25: {dir_name}, result={mkdir_result}"
-                        continue
-                move_result = _open_move(file_id, target_cid)
-                if _is_api_ok(move_result):
-                    move_success += 1
-                    status_text = res.get("status") or "\u5df2\u5904\u7406"
-                    res["status"] = f"{status_text} -> {dir_name}/"
-                    res["status"] = f"{status_text} -> {dir_name}/"
-                else:
-                    move_fail += 1
-                    res["status"] = f"\u79fb\u52a8\u5931\u8d25: {move_result}"
-
-            dir_renamed = False
-            dir_rename_error = ""
-            if new_name:
-                dir_result = _open_rename(cid, new_name)
-                if _is_api_ok(dir_result):
-                    dir_renamed = True
-                    logger.info(f"\u76ee\u5f55\u5df2\u91cd\u547d\u540d\u4e3a: {new_name}")
-                else:
-                    dir_rename_error = f"\u76ee\u5f55\u91cd\u547d\u540d\u5931\u8d25: {dir_result}"
-                    logger.error(dir_rename_error)
-
-            failed_statuses = [r for r in results if any(word in str(r.get("status", "")) for word in ("\u5931\u8d25", "\u5f02\u5e38"))]
-            ok = rename_fail == 0 and move_fail == 0 and not dir_rename_error and not failed_statuses
-            msg = f"\u5904\u7406\u5b8c\u6210: \u5171 {len(all_files)} \u4e2a\u6587\u4ef6\uff0c\u91cd\u547d\u540d\u6210\u529f {rename_success} \u4e2a\uff0c\u91cd\u547d\u540d\u5931\u8d25 {rename_fail} \u4e2a\uff0c\u521b\u5efa\u76ee\u5f55 {created_dirs} \u4e2a\uff0c\u79fb\u52a8\u6210\u529f {move_success} \u4e2a\uff0c\u79fb\u52a8\u5931\u8d25 {move_fail} \u4e2a"
-            if dir_renamed:
-                msg += f"\uff0c\u76ee\u5f55\u5df2\u91cd\u547d\u540d\u4e3a: {new_name}"
-            if dir_rename_error:
-                msg += f"\uff0c{dir_rename_error}"
-
-            return {
-                "success": ok,
-                "message": msg,
-                "files": results,
-                "renamed": rename_success,
-                "created_dirs": created_dirs,
-                "moved": move_success,
+        try:
+            storage = str(data.get("storage") or "u115").lower()
+            payload = {
+                "storage": storage,
+                "path": file_path,
+                "type": "dir",
+                "name": Path(file_path).name,
             }
+            fileitem = FileItem(**payload) if FileItem else payload
+            chain = StorageChain()
+
+            attempts = [
+                lambda: chain.rename(fileitem=fileitem, new_name=new_name, recursive=True),
+                lambda: chain.rename(fileitem, new_name, recursive=True),
+                lambda: chain.rename(fileitem=fileitem, name=new_name, recursive=True),
+                lambda: chain.rename(fileitem, new_name),
+            ]
+            last_error = None
+            for attempt in attempts:
+                try:
+                    result = attempt()
+                except TypeError as e:
+                    last_error = e
+                    continue
+                except Exception as e:
+                    last_error = e
+                    break
+                if isinstance(result, dict):
+                    ok = result.get("success") is not False and result.get("code") not in (1, 500) and not result.get("error")
+                    return {
+                        "success": ok,
+                        "message": result.get("message") or result.get("msg") or "MP\u5185\u7f6e\u91cd\u547d\u540d\u5df2\u8c03\u7528",
+                        "data": result,
+                        "files": result.get("files", []),
+                    }
+                return {
+                    "success": bool(result) if result is not None else True,
+                    "message": "MP\u5185\u7f6e\u91cd\u547d\u540d\u5df2\u8c03\u7528",
+                    "data": result,
+                    "files": [],
+                }
+
+            return {"success": False, "message": f"MP\u5185\u7f6e\u91cd\u547d\u540d\u8c03\u7528\u5931\u8d25: {last_error}", "files": []}
 
         except Exception as e:
-            logger.error(f"\u9012\u5f52\u91cd\u547d\u540d\u5931\u8d25: {e}")
-            return {"success": False, "message": f"\u64cd\u4f5c\u5931\u8d25: {str(e)}", "files": []}
-
+            logger.error(f"MP\u5185\u7f6e\u91cd\u547d\u540d\u5f02\u5e38: {e}")
+            return {"success": False, "message": f"MP\u5185\u7f6e\u91cd\u547d\u540d\u5f02\u5e38: {str(e)}", "files": []}
 
     @eventmanager.register(EventType.PluginAction)
     def handle_event(self, event: Event) -> None:
@@ -2042,9 +1819,12 @@ class ClSearch(_PluginBase):
             else:
                 logger.info(f"媒体识别失败，使用原始文件夹名: {task_name}")
 
-            # Step 3: 调用内置rename API重命名文件夹和内部文件（含Season子目录创建）
+            # Step 3: use MoviePilot built-in storage rename(recursive=True) for U115 directory
+            source_path = f"{self._resolved_path.rstrip('/')}/{task_name}"
             rename_result = self._api_recursive_rename(data={
                 "cid": folder_cid,
+                "path": source_path,
+                "storage": "u115",
                 "new_name": new_folder_name,
             })
             logger.info(f"重命名结果: {rename_result.get('message', '未知')}")
@@ -2058,7 +1838,7 @@ class ClSearch(_PluginBase):
                     ),
                     notification_type=NotificationType.Warning,
                 )
-                self._record_pending_task(task_name, f"{self._resolved_path}/{task_name}", {
+                self._record_pending_task(task_name, source_path, {
                     "rename_result": rename_result.get("message"),
                     "media_type": media_type,
                     "title": title,
