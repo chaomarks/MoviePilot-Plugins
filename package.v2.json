@@ -3,14 +3,12 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.5.6",
+    "version": "1.5.8",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
-      "v1.5.6": "修复取消任务失效、重复轮询线程、fs_move参数错误、Season目录重复创建等问题；新增cl_search_complete_task工具供智能体清除待整理任务；改用MessageChain内部方法通知智能体；清理dead code。",
-      "v1.5.3.5": "目标目录改由智能体根据MP映射配置识别，插件只负责离线完成和MP内置重命名。",
-      "v1.5.3.4": "重命名改为调用MP内置U115存储rename(recursive=True)，不再插件自行操作115文件。"
+      "v1.5.8": "新增cl_search_move_file工具，智能体判断目录后由插件执行移动，不再依赖用户渠道权限；修复历史记录显示和清空功能；优化通知定向回传。"
     }
   }
 }

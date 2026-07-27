@@ -31,7 +31,7 @@ from app.core.event import Event, EventManager, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
-from app.schemas.types import EventType
+from app.schemas.types import EventType, MessageChannel
 from app.agent.tools.base import MoviePilotTool
 from app.schemas.types import MediaType as MMediaType
 
@@ -46,7 +46,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.6"
+    plugin_version = "1.5.8"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -240,6 +240,13 @@ class ClSearch(_PluginBase):
                 "methods": ["GET", "POST"],
                 "auth": "bear",
                 "summary": "关闭插件首页任务记录",
+            },
+            {
+                "path": "/ClSearch/history/clear",
+                "endpoint": self._api_clear_history,
+                "methods": ["GET", "POST"],
+                "auth": "bear",
+                "summary": "清空搜索或离线历史记录",
             },
         ]
 
@@ -531,6 +538,30 @@ class ClSearch(_PluginBase):
                 "}catch(e){alert('关闭任务失败：'+e.message);}})()"
             )
 
+        def _clear_history_href(history_type: str) -> str:
+            token_param = json.dumps(token or "", ensure_ascii=False)
+            url = f"/api/v1/plugin/ClSearch/ClSearch/history/clear?type={history_type}"
+            url_param = json.dumps(url, ensure_ascii=False)
+            row_attr = "data-clsearch-search-row" if history_type == "search" else "data-clsearch-offline-row"
+            count_attr = "data-clsearch-search-count" if history_type == "search" else "data-clsearch-offline-count"
+            empty_text = "暂无搜索记录，使用 /clsearch 关键词 开始搜索" if history_type == "search" else "暂无离线下载记录"
+            return (
+                "javascript:void(async()=>{"
+                "if(!confirm('确定清空"+history_type+"历史记录？'))return;"
+                f"const u={url_param};const tk={token_param};"
+                "const api=u+(u.includes('?')?'&':'?')+'token='+encodeURIComponent(tk);"
+                "try{const r=await fetch(api,{credentials:'include'});"
+                "const d=await r.json().catch(()=>({success:r.ok}));"
+                "if(d&&d.success){"
+                f"document.querySelectorAll('[{row_attr}=\"1\"]').forEach(e=>e.remove());"
+                f"const c=document.querySelector('[{count_attr}=\"1\"]');"
+                "if(c){c.textContent='0条';}"
+                f"const card=document.querySelector('[{row_attr}=\"card\"]');"
+                f"if(card&&!document.querySelector('[{row_attr}=\"1\"]')){{card.innerHTML='';card.textContent='{empty_text}';}}"
+                "}else{alert((d&&d.message)||'清空失败');}"
+                "}catch(e){alert('清空失败：'+e.message);}})()"
+            )
+
         return [
             {
                 "component": "div",
@@ -640,27 +671,31 @@ class ClSearch(_PluginBase):
                         "content": [
                             {
                                 "component": "VCardTitle",
-                                "props": {"class": "text-subtitle-1"},
-                                "text": f"搜索历史（{len(search_items)}条）",
+                                "props": {"class": "text-subtitle-1 d-flex align-center justify-space-between"},
+                                "content": [
+                                    {"component": "span", "props": {"data-clsearch-search-count": "1"}, "text": f"搜索记录（{len(search_items)}条）"},
+                                    {
+                                        "component": "VBtn",
+                                        "props": {"variant": "text", "size": "small", "color": "error", "href": _clear_history_href("search")},
+                                        "text": "清空记录",
+                                    },
+                                ],
                             },
                             {
                                 "component": "VCardText",
-                                "props": {"class": "pa-0"},
-                                "content": [{
-                                    "component": "VDataTable",
-                                    "props": {
-                                        "headers": [
-                                            {"title": "关键词", "key": "keyword"},
-                                            {"title": "结果数", "key": "count", "align": "center"},
-                                            {"title": "时间", "key": "time", "align": "end"},
+                                "props": {"class": "pa-2", "data-clsearch-search-row": "card"},
+                                "content": [
+                                    {
+                                        "component": "VRow",
+                                        "props": {"class": "ma-0 py-2 align-center border-b", "data-clsearch-search-row": "1"},
+                                        "content": [
+                                            {"component": "VCol", "props": {"cols": 7, "class": "py-1"}, "content": [{"component": "div", "props": {"class": "font-weight-medium text-truncate"}, "text": item["keyword"]}]},
+                                            {"component": "VCol", "props": {"cols": 2, "class": "py-1 text-center"}, "content": [{"component": "div", "text": f"{item['count']}条"}]},
+                                            {"component": "VCol", "props": {"cols": 3, "class": "py-1 text-right"}, "content": [{"component": "div", "props": {"class": "text-caption text-medium-emphasis"}, "text": item["time"]}]},
                                         ],
-                                        "items": search_items,
-                                        "items-per-page": 10,
-                                        "hover": True,
-                                        "density": "compact",
-                                        "hide-default-footer": len(search_items) <= 10,
-                                    },
-                                }] if search_items else [{
+                                    }
+                                    for item in search_items
+                                ] if search_items else [{
                                     "component": "VCardText",
                                     "text": "暂无搜索记录，使用 /clsearch 关键词 开始搜索",
                                 }],
@@ -674,34 +709,31 @@ class ClSearch(_PluginBase):
                         "content": [
                             {
                                 "component": "VCardTitle",
-                                "props": {"class": "text-subtitle-1"},
-                                "text": f"离线下载历史（{len(offline_items)}条）",
+                                "props": {"class": "text-subtitle-1 d-flex align-center justify-space-between"},
+                                "content": [
+                                    {"component": "span", "props": {"data-clsearch-offline-count": "1"}, "text": f"离线记录（{len(offline_items)}条）"},
+                                    {
+                                        "component": "VBtn",
+                                        "props": {"variant": "text", "size": "small", "color": "error", "href": _clear_history_href("offline")},
+                                        "text": "清空记录",
+                                    },
+                                ],
                             },
                             {
                                 "component": "VCardText",
-                                "props": {"class": "pa-0"},
-                                "content": [{
-                                    "component": "VDataTable",
-                                    "props": {
-                                        "headers": [
-                                            {"title": "标题", "key": "title"},
-                                            {"title": "状态", "key": "status", "align": "center"},
-                                            {"title": "时间", "key": "time", "align": "end"},
+                                "props": {"class": "pa-2", "data-clsearch-offline-row": "card"},
+                                "content": [
+                                    {
+                                        "component": "VRow",
+                                        "props": {"class": "ma-0 py-2 align-center border-b", "data-clsearch-offline-row": "1"},
+                                        "content": [
+                                            {"component": "VCol", "props": {"cols": 7, "class": "py-1"}, "content": [{"component": "div", "props": {"class": "font-weight-medium text-truncate"}, "text": r["title"]}]},
+                                            {"component": "VCol", "props": {"cols": 2, "class": "py-1 text-center"}, "content": [{"component": "div", "text": "✅" if r.get("success") else "❌"}]},
+                                            {"component": "VCol", "props": {"cols": 3, "class": "py-1 text-right"}, "content": [{"component": "div", "props": {"class": "text-caption text-medium-emphasis"}, "text": r["time"]}]},
                                         ],
-                                        "items": [
-                                            {
-                                                "title": r["title"],
-                                                "status": "✅ 成功" if r.get("success") else f"❌ {r.get('error', '失败')}",
-                                                "time": r["time"],
-                                            }
-                                            for r in offline_items
-                                        ],
-                                        "items-per-page": 10,
-                                        "hover": True,
-                                        "density": "compact",
-                                        "hide-default-footer": len(offline_items) <= 10,
-                                    },
-                                }] if offline_items else [{
+                                    }
+                                    for r in offline_items
+                                ] if offline_items else [{
                                     "component": "VCardText",
                                     "text": "暂无离线下载记录",
                                 }],
@@ -1519,6 +1551,29 @@ class ClSearch(_PluginBase):
 
         return {"success": False, "message": f"未知任务类型: {task_type}"}
 
+    def _api_clear_history(self, data: dict = None, type: str = "") -> dict:
+        """清空搜索或离线历史记录"""
+        data = data or {}
+        history_type = str(data.get("type") or type or "").strip()
+        if history_type == "search":
+            self._search_history = []
+            self.save_data(self._search_history_data_key, [])
+            logger.info("搜索历史已清空")
+            return {"success": True, "message": "搜索历史已清空"}
+        elif history_type == "offline":
+            self._offline_history = []
+            self.save_data(self._offline_history_data_key, [])
+            logger.info("离线下载历史已清空")
+            return {"success": True, "message": "离线下载历史已清空"}
+        elif history_type == "all":
+            self._search_history = []
+            self._offline_history = []
+            self.save_data(self._search_history_data_key, [])
+            self.save_data(self._offline_history_data_key, [])
+            logger.info("所有历史记录已清空")
+            return {"success": True, "message": "所有历史记录已清空"}
+        return {"success": False, "message": "请提供 type 参数（search/offline/all）"}
+
     def _api_search(self, keyword: str = "", page: int = 1, search_type: str = "4") -> dict:
         """API: 搜索磁力资源
 
@@ -1892,6 +1947,61 @@ class ClSearch(_PluginBase):
         except Exception as e:
             return {"success": False, "message": f"重命名失败: {str(e)}"}
 
+    def _find_cid_by_path(self, target_path: str) -> Optional[str]:
+        """根据115网盘路径逐层查找目录CID
+
+        Args:
+            target_path: 115网盘完整路径，如 "/媒体库/电影" 或 "媒体库/电影"
+
+        Returns:
+            目标目录的CID，失败返回None
+        """
+        if not target_path or not self._p115_cookie:
+            return None
+        # 标准化路径：去掉首尾斜杠，按 / 分割
+        path = target_path.strip().strip("/")
+        if not path:
+            return "0"  # 根目录
+        parts = [p for p in path.split("/") if p]
+        if not parts:
+            return "0"
+
+        try:
+            p115_cookie = self._normalize_cookie(self._p115_cookie)
+            client = P115Client(p115_cookie)
+            current_cid = "0"  # 从根目录开始
+            for i, part in enumerate(parts):
+                found = False
+                offset = 0
+                while True:
+                    result = client.fs_files({"cid": current_cid, "limit": 1000, "offset": offset})
+                    items = result.get("data") if isinstance(result, dict) else None
+                    if not items:
+                        break
+                    for item in items:
+                        # 只匹配文件夹
+                        if str(item.get("fc", "")) == "0" or item.get("pid"):
+                            item_name = str(item.get("n") or item.get("name") or "").strip()
+                            item_cid = item.get("cid")
+                            if item_cid and item_name == part:
+                                current_cid = str(item_cid)
+                                found = True
+                                logger.info(f"路径查找: {'/'.join(parts[:i+1])} -> CID={current_cid}")
+                                break
+                    if found:
+                        break
+                    if len(items) < 1000:
+                        break
+                    offset += 1000
+                if not found:
+                    logger.error(f"路径查找失败: 未找到目录 '{part}' (路径: {'/'.join(parts[:i+1])})")
+                    return None
+            logger.info(f"路径查找成功: {target_path} -> CID={current_cid}")
+            return current_cid
+        except Exception as e:
+            logger.error(f"路径查找异常: {target_path}, {e}")
+            return None
+
     def _api_move_file(self, data: dict) -> dict:
         """移动文件到指定文件夹（优先使用 StorageChain，p115client 兜底）
 
@@ -2011,10 +2121,13 @@ class ClSearch(_PluginBase):
         if duplicate_pending:
             logger.info(f"\u79bb\u7ebf\u4efb\u52a1\u5df2\u5728\u8f6e\u8be2\u961f\u5217\u4e2d\uff0c\u8df3\u8fc7\u91cd\u590d\u63d0\u4ea4: {title} ({local_info_hash[:12]}...)")
             self._start_polling()
+            _session = data.get("_session") or {}
             self.post_message(
                 title="115\u79bb\u7ebf\u4efb\u52a1\u5df2\u5b58\u5728",
-                content=f"**{title}** \u5df2\u5728\u79bb\u7ebf\u76d1\u63a7\u961f\u5217\u4e2d\uff0c\u5df2\u7ed3\u675f\u672c\u6b21\u91cd\u590d\u63d0\u4ea4\u3002\ninfo_hash: `{local_info_hash}`",
-                notification_type=NotificationType.Plugin,
+                text=f"**{title}** \u5df2\u5728\u79bb\u7ebf\u76d1\u63a7\u961f\u5217\u4e2d\uff0c\u5df2\u7ed3\u675f\u672c\u6b21\u91cd\u590d\u63d0\u4ea4\u3002\ninfo_hash: `{local_info_hash}`",
+                mtype=NotificationType.Plugin,
+                channel=self._convert_channel(_session.get("channel")),
+                userid=_session.get("userid"),
             )
             return {
                 "success": True,
@@ -2096,6 +2209,7 @@ class ClSearch(_PluginBase):
                         "status": "已加入离线监控",
                         "add_time": time.time(),
                         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "session": data.get("_session") or {},
                     }
                 self._save_offline_pending_tasks()
                 logger.info(f"\u5df2\u52a0\u5165\u79bb\u7ebf\u5b8c\u6210\u8f6e\u8be2\u76d1\u63a7({reason}): {title} ({info_hash[:12]}...)")
@@ -2119,10 +2233,17 @@ class ClSearch(_PluginBase):
                         self._record_offline_history(display_title, True)
                         # 异步执行重命名整理，避免阻塞工具调用
                         def _async_transfer():
+                            _tsession = data.get("_session") or {}
                             try:
                                 transfer_result = self._trigger_transfer(task_name_for_transfer, task_for_transfer, info_hash=duplicate_hash)
                                 if isinstance(transfer_result, dict) and transfer_result.get("needs_agent"):
-                                    self._notify_agent(transfer_result.get("agent_message", ""))
+                                    self._notify_agent(
+                                        transfer_result.get("agent_message", ""),
+                                        channel=_tsession.get("channel"),
+                                        source="clsearch",
+                                        userid=_tsession.get("userid", "clsearch"),
+                                        username=_tsession.get("username", "clsearch"),
+                                    )
                             except Exception as e:
                                 logger.error(f"异步重命名整理异常: {e}")
                         threading.Thread(target=_async_transfer, daemon=True).start()
@@ -2142,10 +2263,13 @@ class ClSearch(_PluginBase):
 
                 self._record_offline_history(display_title, True)
                 tracked_hash = _track_offline_task("duplicate")
+                _session = data.get("_session") or {}
                 self.post_message(
                     title="115离线任务已存在",
-                    content=f"**{display_title}** 已在115离线任务中，已跳过重复添加。" + (f"\ninfo_hash: `{tracked_hash}`" if tracked_hash else ""),
-                    notification_type=NotificationType.Plugin,
+                    text=f"**{display_title}** 已在115离线任务中，已跳过重复添加。" + (f"\ninfo_hash: `{tracked_hash}`" if tracked_hash else ""),
+                    mtype=NotificationType.Plugin,
+                    channel=self._convert_channel(_session.get("channel")),
+                    userid=_session.get("userid"),
                 )
                 return {
                     "success": True,
@@ -2296,12 +2420,14 @@ class ClSearch(_PluginBase):
 
             # 递归收集所有层级的视频文件
             video_exts = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m2ts', '.rmvb', '.rm', '.iso', '.vob', '.mpg', '.mpeg', '.m4v', '.3gp', '.f4v')
+            subtitle_exts = ('.srt', '.ass', '.ssa', '.sub', '.idx', '.vtt', '.smi', '.sami')
             all_media_files = []
+            all_other_files = []
             top_sub_folders = []
             visited_cids = set()
 
             def _collect_files(fileitem: FileItem, depth: int = 0, parent_path: str = ""):
-                """递归收集目录内所有视频文件。"""
+                """递归收集目录内所有文件（视频文件 + 非视频文件）。"""
                 # 检查插件是否还在运行
                 if not self._enabled or (self._polling_stop and self._polling_stop.is_set()):
                     logger.info("插件已停止，中断递归收集")
@@ -2328,18 +2454,24 @@ class ClSearch(_PluginBase):
                             _collect_files(item, depth + 1, f"{parent_path}{item_name}/")
                         else:
                             file_ext = os.path.splitext(item_name)[1].lower()
+                            item._parent_path = parent_path
                             if file_ext in video_exts:
-                                item._parent_path = parent_path
                                 all_media_files.append(item)
+                            else:
+                                all_other_files.append(item)
                 except Exception as e:
                     logger.error(f"递归收集文件异常(cid={item_cid}): {e}")
 
             _collect_files(top_fileitem)
 
-            logger.info(f"递归收集完成: 视频文件 {len(all_media_files)} 个, 顶层子目录 {len(top_sub_folders)} 个")
+            logger.info(f"递归收集完成: 视频文件 {len(all_media_files)} 个, 非视频文件 {len(all_other_files)} 个, 顶层子目录 {len(top_sub_folders)} 个")
 
             # 缓存 Season 目录 CID，避免重复创建
             season_dir_cache = {}  # {season_number: cid}
+            # 收集需要删除的文件CID（广告文件、无剧集信息的视频、非媒体文件）
+            deleted_cids = []
+            # 记录已处理的集数，用于检测重复集数
+            processed_episodes = set()  # {(season, episode)}
 
             for file_item in all_media_files:
                 # 检查插件是否还在运行
@@ -2374,9 +2506,19 @@ class ClSearch(_PluginBase):
                     season = 1
                     episode = int(ep_match.group(1))
                 else:
-                    file_status_list.append({"old_name": original_name, "new_name": original_name, "status": "跳过（无剧集信息）"})
-                    logger.info(f"跳过文件（无剧集信息）: {original_name}")
+                    file_status_list.append({"old_name": original_name, "new_name": "", "status": "删除（无剧集信息）"})
+                    logger.info(f"标记删除（无剧集信息）: {original_name}")
+                    deleted_cids.append(file_cid)
                     continue
+
+                # 检测重复集数（BT源可能包含重复文件）
+                ep_key = (season, episode)
+                if ep_key in processed_episodes:
+                    file_status_list.append({"old_name": original_name, "new_name": "", "status": "删除（重复集数）"})
+                    logger.info(f"标记删除（重复集数）: {original_name} (S{season:02d}E{episode:02d})")
+                    deleted_cids.append(file_cid)
+                    continue
+                processed_episodes.add(ep_key)
 
                 new_file_name = f"{file_title} - S{season:02d}E{episode:02d} - 第 {episode} 集{file_ext}"
                 # 115 文件名限制 255 字节，超长才截断标题
@@ -2488,6 +2630,28 @@ class ClSearch(_PluginBase):
                         file_status_list.append({"old_name": original_name, "new_name": new_file_name, "status": "已重命名"})
                         logger.info(f"重命名文件: {original_name} -> {new_file_name}")
 
+            # 删除非媒体文件（保留字幕），收集到 deleted_cids
+            for file_item in all_other_files:
+                file_cid_del = str(getattr(file_item, "fileid", "") or "")
+                file_name_del = getattr(file_item, "name", "") or ""
+                file_ext_del = os.path.splitext(file_name_del)[1].lower()
+                if file_ext_del in subtitle_exts:
+                    file_status_list.append({"old_name": file_name_del, "new_name": file_name_del, "status": "保留（字幕）"})
+                    continue
+                if file_cid_del:
+                    deleted_cids.append(file_cid_del)
+                    file_status_list.append({"old_name": file_name_del, "new_name": "", "status": "删除（非媒体文件）"})
+                    logger.info(f"标记删除（非媒体文件）: {file_name_del}")
+
+            # 批量删除广告/无用文件
+            if deleted_cids:
+                logger.info(f"准备删除 {len(deleted_cids)} 个广告/无用文件")
+                delete_result = self._api_delete_files({"cids": deleted_cids})
+                if delete_result.get("success"):
+                    logger.info(f"广告/无用文件删除成功: {len(deleted_cids)} 个")
+                else:
+                    logger.warning(f"广告/无用文件删除失败: {delete_result.get('message')}")
+
         except Exception as e:
             logger.error(f"递归重命名内部文件异常: {e}")
             return {
@@ -2527,8 +2691,8 @@ class ClSearch(_PluginBase):
         if not keyword:
             self.post_message(
                 title="观影搜",
-                content="请输入搜索关键词，例如: /clsearch 开端",
-                notification_type=self._notification_type("Warning"),
+                text="请输入搜索关键词，例如: /clsearch 开端",
+                mtype=self._notification_type("Warning"),
             )
             return
 
@@ -2538,8 +2702,8 @@ class ClSearch(_PluginBase):
         else:
             self.post_message(
                 title="观影搜",
-                content=result.get("message", "搜索失败"),
-                notification_type=self._notification_type("Warning"),
+                text=result.get("message", "搜索失败"),
+                mtype=self._notification_type("Warning"),
             )
 
     # ==================== 后台轮询 ====================
@@ -2643,11 +2807,16 @@ class ClSearch(_PluginBase):
                         logger.info(f"115离线任务列表未匹配到hash，但下载目录已找到文件夹，按完成处理: {task_name}, CID: {folder_cid}")
                         self._update_offline_task_status(info_hash, "离线完成", folder_cid=folder_cid, path=self._join_u115_path(self._resolved_path, task_name) if self._resolved_path else task_name)
                         self._record_offline_history(task_name, True)
-                        self.post_message(
-                            title="115离线下载完成",
-                            content=f"**{task_name}** 已离线下载完成",
-                            notification_type=NotificationType.Plugin,
-                        )
+                        # 自动整理模式下跳过此通知，由 _trigger_transfer 统一发"重命名完成"
+                        if not self._auto_transfer:
+                            _session = task_info.get("session") or {}
+                            self.post_message(
+                                title="115离线下载完成",
+                                text=f"**{task_name}** 已离线下载完成",
+                                mtype=NotificationType.Plugin,
+                                channel=self._convert_channel(_session.get("channel")),
+                                userid=_session.get("userid"),
+                            )
                         if self._auto_transfer:
                             task_info["folder_cid"] = folder_cid
                             self._update_offline_task_status(info_hash, "自动整理中")
@@ -2672,17 +2841,29 @@ class ClSearch(_PluginBase):
                     logger.info(f"115离线下载完成: {task_name}")
                     self._update_offline_task_status(info_hash, "离线完成", folder_cid=task_folder_cid, name=task_name)
                     self._record_offline_history(task_name, True)
-                    self.post_message(
-                        title="115离线下载完成",
-                        content=f"**{task_name}** 已离线下载完成",
-                        notification_type=NotificationType.Plugin,
-                    )
+                    # 自动整理模式下跳过此通知，由 _trigger_transfer 统一发"重命名完成"
+                    if not self._auto_transfer:
+                        _session = task_info.get("session") or {}
+                        self.post_message(
+                            title="115离线下载完成",
+                            text=f"**{task_name}** 已离线下载完成",
+                            mtype=NotificationType.Plugin,
+                            channel=self._convert_channel(_session.get("channel")),
+                            userid=_session.get("userid"),
+                        )
                     if self._auto_transfer:
                         self._update_offline_task_status(info_hash, "自动整理中")
                         transfer_result = self._trigger_transfer(task_name, task, info_hash=info_hash)
                         # 如果需要智能体处理，发消息给智能体
                         if isinstance(transfer_result, dict) and transfer_result.get("needs_agent"):
-                            self._notify_agent(transfer_result.get("agent_message", ""))
+                            _tsession = task_info.get("session") or {}
+                            self._notify_agent(
+                                transfer_result.get("agent_message", ""),
+                                channel=_tsession.get("channel"),
+                                source="clsearch",
+                                userid=_tsession.get("userid", "clsearch"),
+                                username=_tsession.get("username", "clsearch"),
+                            )
                         # 整理完成或失败都移出监控队列（失败已记录为待处理）
                         completed_keys.append(info_hash)
 
@@ -2690,10 +2871,13 @@ class ClSearch(_PluginBase):
                     completed_keys.append(info_hash)
                     logger.error(f"115离线下载失败: {task_name}")
                     self._record_offline_history(task_name, False, "状态码 -1")
+                    _session = task_info.get("session") or {}
                     self.post_message(
                         title="115离线下载失败",
-                        content=f"**{task_name}** 离线下载失败",
-                        notification_type=self._notification_type("Warning"),
+                        text=f"**{task_name}** 离线下载失败",
+                        mtype=self._notification_type("Warning"),
+                        channel=self._convert_channel(_session.get("channel")),
+                        userid=_session.get("userid"),
                     )
 
             if completed_keys or expired_keys:
@@ -2708,20 +2892,26 @@ class ClSearch(_PluginBase):
             logger.error(f"115离线任务状态检查异常: {e}")
             self.post_message(
                 title="115离线轮询异常",
-                content=f"检查115离线任务状态失败: {e}",
-                notification_type=self._notification_type("Warning"),
+                text=f"检查115离线任务状态失败: {e}",
+                mtype=self._notification_type("Warning"),
             )
 
     def _trigger_transfer(self, task_name: str, task: dict, info_hash: str = "") -> dict:
-        """自动整理：离线完成后调用内置rename API重命名文件，然后通知智能体处理广告删除和移动
+        """自动整理：离线完成后调用内置rename API重命名文件并删除广告，然后通知智能体移动
 
         完整流程：
         1. 在115网盘的离线目录中查找下载完成的文件夹
         2. 识别媒体信息，确定规范的文件夹名（含tmdbID）
-        3. 调用内置rename API原地重命名文件夹和内部文件（含创建Season子目录）
-        4. 记录待整理任务，通知智能体处理广告删除和整体移动
+        3. 调用内置rename API原地重命名文件夹和内部文件（含创建Season子目录），并删除无法重命名的广告文件
+        4. 记录待整理任务，通知智能体处理整体移动
         """
         try:
+            # 获取来源会话信息，用于定向通知
+            _session = {}
+            if info_hash:
+                with self._task_lock:
+                    _task_record = self._pending_tasks.get(info_hash, {})
+                    _session = _task_record.get("session") or {}
             if not self._resolved_path:
                 logger.info(f"未解析离线目录路径，跳过自动整理: {task_name}")
                 self._record_pending_task(task_name, None, {"error": "未解析离线目录路径"})
@@ -2823,12 +3013,14 @@ class ClSearch(_PluginBase):
             if not rename_result.get("success"):
                 self.post_message(
                     title="115重命名失败",
-                    content=(
+                    text=(
                         f"**{task_name}** 重命名失败，已停止后续自动整理。\n"
                         f"CID: `{folder_cid}`\n"
                         f"错误: {rename_result.get('message', '未知错误')}"
                     ),
-                    notification_type=self._notification_type("Warning"),
+                    mtype=self._notification_type("Warning"),
+                    channel=self._convert_channel(_session.get("channel")),
+                    userid=_session.get("userid"),
                 )
                 self._record_pending_task(task_name, source_path, {
                     "rename_result": rename_result.get("message"),
@@ -2855,14 +3047,14 @@ class ClSearch(_PluginBase):
             })
             self._update_offline_task_status(info_hash, "重命名完成，待智能体移动", folder_cid=folder_cid, path=final_path)
 
-            # Step 5: 主动调用智能体处理删广告和移动
+            # Step 5: 主动调用智能体处理移动
             _title_for_notify = re.sub(r"^\[[^\]]*\]\s*", "", task_name)
             _match = re.match(r"^([^\.\[]+)", _title_for_notify)
             _clean_name = _match.group(1).strip() if _match else _title_for_notify.strip()
 
             # 构造发给智能体的消息
             agent_message = (
-                f"115离线下载已完成并重命名，请处理后续整理：\n"
+                f"115离线下载已完成并重命名，请将文件夹移动到入库目录：\n"
                 f"标题: {title}\n"
                 f"年份: {year}\n"
                 f"TMDB ID: {tmdb_id}\n"
@@ -2872,15 +3064,27 @@ class ClSearch(_PluginBase):
                 f"CID: {folder_cid}\n"
                 f"存储: u115\n"
                 f"\n请执行以下操作：\n"
-                f"1. 列出该文件夹内的所有文件，识别并删除广告文件（非媒体文件、小文件、广告文本文件等）\n"
-                f"2. 根据媒体类型({media_type})和MP目录映射配置，计算目标入库目录\n"
-                f"3. 使用115网盘API(fs_move)将整个文件夹移动到目标入库目录\n"
-                f"\n注意：MP内置StorageChain没有move方法，移动文件请使用p115client的fs_move(file_ids, pid=目标目录CID)"
-                f"\n4. 完成移动后，调用 cl_search_complete_task 工具清除待整理任务记录，参数 task_name 为: {task_name}"
+                f"1. 根据媒体类型({media_type})和MP目录映射配置，确定目标入库目录的115网盘完整路径\n"
+                f"   - 电影(movie)通常移动到电影库目录，如 /媒体库/电影\n"
+                f"   - 电视剧(tv)通常移动到电视剧库目录，如 /媒体库/电视剧\n"
+                f"   - 请查询MP的目录映射配置确认实际路径\n"
+                f"2. 调用 cl_search_move_file 工具执行移动，参数：\n"
+                f"   - source_cid: {folder_cid}（源文件夹CID）\n"
+                f"   - target_path: 目标目录的115网盘完整路径\n"
+                f"   - task_name: {task_name}\n"
+                f"\n注意：文件移动由插件直接执行，无需智能体拥有文件操作权限。"
+                f"插件会自动根据目标路径查找CID并完成移动，移动成功后自动清除待整理任务记录。"
+                f"\n如果因目录映射配置查询失败或目标路径不存在导致无法移动，请将具体失败原因直接回复给当前消息渠道通知用户。"
             )
 
             # 主动发送消息给智能体
-            self._notify_agent(agent_message)
+            self._notify_agent(
+                agent_message,
+                channel=self._convert_channel(_session.get("channel")),
+                source="clsearch",
+                userid=_session.get("userid", "clsearch"),
+                username=_session.get("username", "clsearch"),
+            )
 
             # 同时发MP通知记录
             notify_content = f"**离线下载完成: {task_name}**\n"
@@ -2890,12 +3094,14 @@ class ClSearch(_PluginBase):
             notify_content += f"CID: `{folder_cid}`\n"
             if media_type:
                 notify_content += f"媒体类型: {media_type}\n"
-            notify_content += "已通知智能体处理删广告和移动"
+            notify_content += "已通知智能体处理移动"
 
             self.post_message(
                 title=f"{_clean_name} 重命名完成，待移动",
-                content=notify_content,
-                notification_type=NotificationType.Plugin,
+                text=notify_content,
+                mtype=NotificationType.Plugin,
+                channel=self._convert_channel(_session.get("channel")),
+                userid=_session.get("userid"),
             )
             # 整理完成，清除取消标志
             self._cancel_flags.pop(info_hash, None)
@@ -2912,22 +3118,46 @@ class ClSearch(_PluginBase):
             self._update_offline_task_status(info_hash, "自动整理异常", error=str(e))
             return {"success": False}
 
-    def _notify_agent(self, message: str) -> bool:
+    def _convert_channel(self, channel):
+        """将字符串channel转换为MessageChannel枚举
+
+        MoviePilotTool 的 self._channel 是字符串（如 'WebAgent'），
+        但 MessageChain.handle_message() 和 post_message() 需要 MessageChannel 枚举。
+        """
+        from app.schemas.types import MessageChannel
+        if channel is None:
+            return MessageChannel.Web
+        if isinstance(channel, MessageChannel):
+            return channel
+        # 先按枚举名查找（如 'WebAgent' -> MessageChannel.WebAgent）
+        try:
+            return MessageChannel[channel]
+        except (KeyError, ValueError):
+            pass
+        # 再按枚举值查找（如 '微信' -> MessageChannel.Wechat）
+        try:
+            return MessageChannel(channel)
+        except (KeyError, ValueError):
+            pass
+        logger.warning(f"未知消息渠道: {channel}, 使用Web默认")
+        return MessageChannel.Web
+
+    def _notify_agent(self, message: str, channel=None, source: str = "clsearch", userid: str = "clsearch", username: str = "clsearch") -> bool:
         """主动发送消息给MP智能体处理
 
         优先用 MP 内部 MessageChain.handle_message()（进程内调用，无需 token），
         HTTP API 作为兜底。
         """
+        channel = self._convert_channel(channel)
         # 优先用 MP 内部方法
         try:
             from app.chain.message import MessageChain
-            from app.schemas.types import MessageChannel
-            logger.info(f"通过MessageChain发送消息给智能体: text={message[:100]}...")
+            logger.info(f"通过MessageChain发送消息给智能体: text={message[:100]}..., channel={channel}")
             MessageChain().handle_message(
-                channel=MessageChannel.Web,
-                source="clsearch",
-                userid="clsearch",
-                username="clsearch",
+                channel=channel,
+                source=source,
+                userid=userid,
+                username=username,
                 text=message,
             )
             logger.info("MessageChain消息发送成功")
@@ -2939,7 +3169,7 @@ class ClSearch(_PluginBase):
         try:
             token = self._get_mp_api_token()
             headers = {"X-API-KEY": token, "Authorization": f"Bearer {token}"} if token else {}
-            data = {"text": message, "source": "clsearch"}
+            data = {"text": message, "source": source, "channel": channel.name if channel else None, "userid": userid, "username": username}
             last_error = None
             for base_url in self._get_mp_api_base_urls():
                 url = f"{base_url}/api/v1/message/"
@@ -3069,13 +3299,13 @@ class ClSearch(_PluginBase):
 
         self.post_message(
             title="观影搜结果",
-            content="\n".join(content_parts),
-            notification_type=NotificationType.Plugin,
+            text="\n".join(content_parts),
+            mtype=NotificationType.Plugin,
         )
 
     def get_agent_tools(self) -> List[type]:
         """获取插件智能体工具，供内置AI智能体调用"""
-        return [ClSearchSearchTool, ClSearchOfflineResultTool, ClSearchDetailTool, ClSearchOfflineTool, ClSearchRenameTool]
+        return [ClSearchSearchTool, ClSearchOfflineResultTool, ClSearchDetailTool, ClSearchOfflineTool, ClSearchRenameTool, ClSearchMoveFileTool]
 
     def stop_service(self) -> None:
         """停止插件服务"""
@@ -3273,6 +3503,12 @@ class ClSearchOfflineResultTool(MoviePilotTool):
             offline_result = plugin._api_offline_download(data={
                 "magnet": magnet,
                 "title": title,
+                "_session": {
+                    "channel": self._channel,
+                    "source": self._source,
+                    "userid": self._user_id,
+                    "username": self._username,
+                },
             })
             if offline_result.get("success"):
                 return offline_result.get("message", f"已成功添加到115离线下载: {title}")
@@ -3306,6 +3542,12 @@ class ClSearchOfflineTool(MoviePilotTool):
             result = plugin._api_offline_download(data={
                 "magnet": magnet,
                 "title": title,
+                "_session": {
+                    "channel": self._channel,
+                    "source": self._source,
+                    "userid": self._user_id,
+                    "username": self._username,
+                },
             })
             if result.get("success"):
                 # 如果需要智能体后续处理（重命名完成，需删广告和移动），返回详细指令
@@ -3413,3 +3655,58 @@ class ClSearchCompleteTaskTool(MoviePilotTool):
                 return f"清除待整理任务失败: {task_name}"
         except Exception as e:
             return f"完成待整理任务异常: {str(e)}"
+
+
+class ClSearchMoveFileInput(BaseModel):
+    """移动文件输入"""
+    source_cid: str = Field(description="要移动的源文件夹CID（115网盘目录ID）")
+    target_path: str = Field(description="目标入库目录的115网盘完整路径，如 '/媒体库/电影' 或 '/媒体库/电视剧'")
+    task_name: str = Field(default="", description="任务名称（离线下载时的标题），移动成功后自动清除待整理记录")
+
+
+class ClSearchMoveFileTool(MoviePilotTool):
+    """115网盘文件移动工具"""
+    name: str = "cl_search_move_file"
+    description: str = (
+        "将115网盘文件夹移动到指定目标目录。"
+        "插件会根据目标路径自动查找目录CID并执行移动，无需智能体拥有文件操作权限。"
+        "source_cid为源文件夹CID，target_path为目标目录的115网盘完整路径。"
+        "移动成功后会自动清除对应的待整理任务记录。"
+    )
+    args_schema: Type[BaseModel] = ClSearchMoveFileInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        target_path = kwargs.get("target_path", "")
+        return f"正在移动文件到: {target_path}..."
+
+    async def run(self, source_cid: str, target_path: str, task_name: str = "", **kwargs) -> str:
+        try:
+            from app.core.plugin import PluginManager
+            plugins = PluginManager().running_plugins
+            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            if not plugin:
+                return "观影磁力搜插件未运行"
+
+            # 1. 根据目标路径查找CID
+            target_cid = plugin._find_cid_by_path(target_path)
+            if not target_cid:
+                return f"移动失败：未找到目标目录路径: {target_path}，请确认路径是否正确"
+
+            # 2. 执行移动
+            move_result = plugin._api_move_file({
+                "cid": source_cid,
+                "target_cid": target_cid,
+                "target_path": target_path,
+                "type": "folder",
+            })
+            if move_result.get("success"):
+                msg = f"✅ 文件移动成功: CID {source_cid} -> {target_path} (CID: {target_cid})"
+                # 3. 自动清除待整理任务记录
+                if task_name:
+                    plugin.clear_pending_transfer_task(task_name)
+                    msg += f"\n已清除待整理任务: {task_name}"
+                return msg
+            else:
+                return f"❌ 文件移动失败: {move_result.get('message', '未知错误')}"
+        except Exception as e:
+            return f"移动文件异常: {str(e)}"

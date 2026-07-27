@@ -1,0 +1,12 @@
+{
+  "name": "ClSearch",
+  "title": "观影磁力搜",
+  "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
+  "version": "1.5.8",
+  "author": "chaomarks",
+  "author_url": "https://github.com/jxxghp/MoviePilot",
+  "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
+  "plugin_order": 50,
+  "auth_level": 1,
+  "type": "local"
+}

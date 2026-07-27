@@ -1,2 +1,1 @@
-requests>=2.28.0
-p115client>=0.0.9
+p115client
