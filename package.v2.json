@@ -3,12 +3,12 @@
     "name": "观影磁力搜",
     "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
     "labels": "资源搜索",
-    "version": "1.5.8",
+    "version": "1.5.8.1",
     "icon": "clsearch.png",
     "author": "chaomarks",
     "level": 1,
     "history": {
-      "v1.5.8": "新增cl_search_move_file工具，智能体判断目录后由插件执行移动，不再依赖用户渠道权限；修复历史记录显示和清空功能；优化通知定向回传。"
+      "v1.5.8.1": "修复历史记录清空不刷新页面、去掉确认弹窗、统计卡片同步更新；新增cl_search_move_file工具实现权限分离。"
     }
   }
 }

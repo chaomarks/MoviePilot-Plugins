@@ -46,7 +46,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.8"
+    plugin_version = "1.5.8.1"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -544,10 +544,10 @@ class ClSearch(_PluginBase):
             url_param = json.dumps(url, ensure_ascii=False)
             row_attr = "data-clsearch-search-row" if history_type == "search" else "data-clsearch-offline-row"
             count_attr = "data-clsearch-search-count" if history_type == "search" else "data-clsearch-offline-count"
+            stat_attr = "data-clsearch-search-stat" if history_type == "search" else "data-clsearch-offline-stat"
             empty_text = "暂无搜索记录，使用 /clsearch 关键词 开始搜索" if history_type == "search" else "暂无离线下载记录"
             return (
                 "javascript:void(async()=>{"
-                "if(!confirm('确定清空"+history_type+"历史记录？'))return;"
                 f"const u={url_param};const tk={token_param};"
                 "const api=u+(u.includes('?')?'&':'?')+'token='+encodeURIComponent(tk);"
                 "try{const r=await fetch(api,{credentials:'include'});"
@@ -556,6 +556,8 @@ class ClSearch(_PluginBase):
                 f"document.querySelectorAll('[{row_attr}=\"1\"]').forEach(e=>e.remove());"
                 f"const c=document.querySelector('[{count_attr}=\"1\"]');"
                 "if(c){c.textContent='0条';}"
+                f"const s=document.querySelector('[{stat_attr}=\"1\"]');"
+                "if(s){s.textContent='0';}"
                 f"const card=document.querySelector('[{row_attr}=\"card\"]');"
                 f"if(card&&!document.querySelector('[{row_attr}=\"1\"]')){{card.innerHTML='';card.textContent='{empty_text}';}}"
                 "}else{alert((d&&d.message)||'清空失败');}"
@@ -588,7 +590,7 @@ class ClSearch(_PluginBase):
                                         "component": "VCardText",
                                         "props": {"class": "pa-3 text-center"},
                                         "content": [
-                                            {"component": "div", "props": {"class": "text-h5 font-weight-bold"}, "text": str(len(search_items))},
+                                            {"component": "div", "props": {"class": "text-h5 font-weight-bold", "data-clsearch-search-stat": "1"}, "text": str(len(search_items))},
                                             {"component": "div", "props": {"class": "text-caption"}, "text": "搜索记录"},
                                         ],
                                     }],
@@ -604,7 +606,7 @@ class ClSearch(_PluginBase):
                                         "component": "VCardText",
                                         "props": {"class": "pa-3 text-center"},
                                         "content": [
-                                            {"component": "div", "props": {"class": "text-h5 font-weight-bold"}, "text": str(sum(1 for r in offline_items if r.get("success")))},
+                                            {"component": "div", "props": {"class": "text-h5 font-weight-bold", "data-clsearch-offline-stat": "1"}, "text": str(sum(1 for r in offline_items if r.get("success")))},
                                             {"component": "div", "props": {"class": "text-caption"}, "text": "成功离线"},
                                         ],
                                     }],
@@ -625,7 +627,7 @@ class ClSearch(_PluginBase):
                                     {
                                         "component": "VBtn",
                                         "props": {"variant": "text", "size": "small", "color": "error", "href": _close_href(all_tasks_close_url, remove_all=True)},
-                                        "text": "清空本地任务",
+                                        "text": "清空任务",
                                     },
                                 ],
                             },
