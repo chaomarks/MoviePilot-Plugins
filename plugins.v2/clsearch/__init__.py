@@ -36,6 +36,9 @@ from app.agent.tools.base import MoviePilotTool
 from app.schemas.types import MediaType as MMediaType
 
 
+_CLSEARCH_ACTIVE_PLUGIN = None
+
+
 class ClSearch(_PluginBase):
     """观影磁力搜插件"""
 
@@ -46,7 +49,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.8.1"
+    plugin_version = "1.5.8.4"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -99,6 +102,7 @@ class ClSearch(_PluginBase):
 
     def init_plugin(self, config: dict = None) -> None:
         """初始化插件"""
+        global _CLSEARCH_ACTIVE_PLUGIN
         if not hasattr(self, "_task_lock") or self._task_lock is None:
             self._task_lock = threading.RLock()
         if not hasattr(self, "_polling_lock") or self._polling_lock is None:
@@ -120,6 +124,8 @@ class ClSearch(_PluginBase):
         self._auto_transfer = False
 
         if not config:
+            if _CLSEARCH_ACTIVE_PLUGIN is self:
+                _CLSEARCH_ACTIVE_PLUGIN = None
             return
 
         self._enabled = bool(config.get("enabled"))
@@ -131,31 +137,13 @@ class ClSearch(_PluginBase):
         # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
         self._auto_transfer = bool(config.get("auto_transfer"))
+        self._config = dict(config)
+        _CLSEARCH_ACTIVE_PLUGIN = self
 
         # 恢复仍在等待115完成的离线任务；待智能体整理记录不再混入轮询队列。
-        saved_search_history = self.get_data(self._search_history_data_key) or []
-        if isinstance(saved_search_history, list):
-            self._search_history = [item for item in saved_search_history if isinstance(item, dict)][:20]
-        saved_offline_history = self.get_data(self._offline_history_data_key) or []
-        if isinstance(saved_offline_history, list):
-            self._offline_history = [item for item in saved_offline_history if isinstance(item, dict)][:20]
-
-        saved_offline_pending = self.get_data(self._offline_pending_data_key) or {}
-        if isinstance(saved_offline_pending, dict):
-            self._pending_tasks = {str(k).lower(): v for k, v in saved_offline_pending.items() if isinstance(v, dict)}
-        elif isinstance(saved_offline_pending, list):
-            dropped_count = 0
-            self._pending_tasks = {}
-            for t in saved_offline_pending:
-                if isinstance(t, dict) and (t.get("info_hash") or t.get("hash")):
-                    self._pending_tasks[str(t.get("info_hash") or t.get("hash")).lower()] = t
-                else:
-                    dropped_count += 1
-            if dropped_count:
-                logger.warning(f"恢复离线监控任务时跳过 {dropped_count} 条无效记录")
-        else:
-            self._pending_tasks = {}
-        if self._pending_tasks and self._enabled:
+        self._reload_history_from_storage()
+        self._pending_tasks = self._load_offline_pending_from_storage()
+        if self._enabled:
             self._start_polling()
 
         # CID 变更时自动解析路径并写回配置
@@ -490,6 +478,8 @@ class ClSearch(_PluginBase):
 
     def get_page(self) -> List[dict]:
         """返回插件详情页，展示搜索和离线历史记录"""
+        self._reload_history_from_storage()
+        self._merge_offline_pending_from_storage()
         search_items = self._search_history[:20]
         offline_items = self._offline_history[:20]
         token = self._get_mp_api_token()
@@ -969,10 +959,20 @@ class ClSearch(_PluginBase):
         if not self._site_cookie:
             return
         try:
-            config = {}
+            config = {
+                "enabled": self._enabled,
+                "site_url": self._site_url,
+                "site_username": self._site_username,
+                "site_password": self._site_password,
+                "p115_cookie": self._p115_cookie,
+                "save_dir_id": self._save_dir_id,
+                "resolved_path": self._resolved_path,
+                "auto_transfer": self._auto_transfer,
+            }
             if hasattr(self, "_config") and isinstance(getattr(self, "_config"), dict):
-                config = dict(getattr(self, "_config"))
+                config.update(dict(getattr(self, "_config")))
             config["site_cookie"] = self._site_cookie
+            self._config = dict(config)
             self.update_config(config)
         except Exception as persist_e:
             logger.warning(f"Cookie持久化失败: {persist_e}")
@@ -1251,6 +1251,45 @@ class ClSearch(_PluginBase):
         with self._task_lock:
             data = {str(k): dict(v) for k, v in self._pending_tasks.items() if isinstance(v, dict)}
         self.save_data(self._offline_pending_data_key, data)
+        logger.info(f"离线监控任务已保存: {len(data)} 个")
+
+    def _load_offline_pending_from_storage(self) -> Dict[str, dict]:
+        saved_offline_pending = self.get_data(self._offline_pending_data_key) or {}
+        if isinstance(saved_offline_pending, dict):
+            return {str(k).lower(): v for k, v in saved_offline_pending.items() if isinstance(v, dict)}
+        if isinstance(saved_offline_pending, list):
+            restored: Dict[str, dict] = {}
+            dropped_count = 0
+            for t in saved_offline_pending:
+                if isinstance(t, dict) and (t.get("info_hash") or t.get("hash")):
+                    restored[str(t.get("info_hash") or t.get("hash")).lower()] = t
+                else:
+                    dropped_count += 1
+            if dropped_count:
+                logger.warning(f"恢复离线监控任务时跳过 {dropped_count} 条无效记录")
+            return restored
+        return {}
+
+    def _merge_offline_pending_from_storage(self) -> None:
+        stored_tasks = self._load_offline_pending_from_storage()
+        if not stored_tasks:
+            return
+        with self._task_lock:
+            added = 0
+            for key, task in stored_tasks.items():
+                if key not in self._pending_tasks:
+                    self._pending_tasks[key] = task
+                    added += 1
+        if added:
+            logger.info(f"从持久化数据恢复离线监控任务: {added} 个")
+
+    def _reload_history_from_storage(self) -> None:
+        saved_search_history = self.get_data(self._search_history_data_key) or []
+        if isinstance(saved_search_history, list):
+            self._search_history = [item for item in saved_search_history if isinstance(item, dict)][:20]
+        saved_offline_history = self.get_data(self._offline_history_data_key) or []
+        if isinstance(saved_offline_history, list):
+            self._offline_history = [item for item in saved_offline_history if isinstance(item, dict)][:20]
 
     def _iter_u115_offline_tasks(self, result: Any) -> List[dict]:
         """兼容不同115接口返回结构，拉平离线任务列表。"""
@@ -1932,7 +1971,7 @@ class ClSearch(_PluginBase):
             logger.info(f"StorageChain.rename_file: cid={file_cid}, {old_name} -> {new_name}")
             result = StorageChain().rename_file(fileitem, new_name)
             logger.info(f"StorageChain.rename_file响应: {result}")
-            if result is not False and result is not None:
+            if result:
                 return {"success": True, "message": "重命名成功"}
         except Exception as e:
             logger.warning(f"StorageChain.rename_file失败，尝试p115client: {e}")
@@ -2361,10 +2400,10 @@ class ClSearch(_PluginBase):
                     folder_renamed = True
                 else:
                     folder_error = json.dumps(storage_result, ensure_ascii=False)[:500]
-            elif storage_result is not False:
+            elif storage_result:
                 folder_renamed = True
             else:
-                folder_error = "rename_file 返回 False"
+                folder_error = f"rename_file 返回 {storage_result!r}"
         except Exception as e:
             folder_error = f"{type(e).__name__}: {e}"
             logger.warning(f"StorageChain.rename_file失败，尝试115 fs_rename: {folder_error}")
@@ -2664,6 +2703,21 @@ class ClSearch(_PluginBase):
                 "created_dirs": created_dirs,
             }
 
+        failure_statuses = [
+            f for f in file_status_list
+            if any(flag in str(f.get("status") or "") for flag in ("失败", "移动失败", "改名失败"))
+        ]
+        if failure_statuses:
+            message = f"目录已改名，但 {len(failure_statuses)} 个文件处理失败，成功重命名 {count} 个"
+            logger.warning(f"递归重命名部分失败: {message}")
+            return {
+                "success": False,
+                "message": message,
+                "files": file_status_list,
+                "renamed": count,
+                "created_dirs": created_dirs,
+            }
+
         logger.info(f"递归重命名完成: 目录已改名, 文件 {count} 个, 创建Season目录 {created_dirs} 个")
         return {
             "success": True,
@@ -2744,6 +2798,7 @@ class ClSearch(_PluginBase):
         """后台轮询工作线程。"""
         while self._polling_stop and not self._polling_stop.is_set():
             try:
+                self._merge_offline_pending_from_storage()
                 with self._task_lock:
                     has_pending = bool(self._pending_tasks)
                 if has_pending:
@@ -2993,7 +3048,32 @@ class ClSearch(_PluginBase):
 
                 logger.info(f"媒体识别成功: {title} ({year}), TMDB ID: {tmdb_id}, 类型: {media_type}")
             else:
-                logger.info(f"媒体识别失败，使用原始文件夹名: {task_name}")
+                logger.warning(f"媒体识别失败，停止自动重命名并记录待处理: {task_name}")
+                source_path = self._join_u115_path(self._resolved_path, task_name)
+                message = "媒体识别失败，未执行自动重命名"
+                self._record_pending_task(task_name, source_path, {
+                    "rename_result": message,
+                    "media_type": media_type,
+                    "title": title,
+                    "year": year,
+                    "tmdb_id": tmdb_id,
+                    "folder_cid": folder_cid,
+                    "rename_failed": True,
+                })
+                self._update_offline_task_status(info_hash, "待处理：媒体识别失败", folder_cid=folder_cid, path=source_path, error=message)
+                self.post_message(
+                    title="115重命名待处理",
+                    text=(
+                        f"**{task_name}** 媒体识别失败，未执行自动重命名。\n"
+                        f"CID: `{folder_cid}`\n"
+                        f"路径: `{source_path}`\n"
+                        "请手动确认媒体信息后再整理。"
+                    ),
+                    mtype=self._notification_type("Warning"),
+                    channel=self._convert_channel(_session.get("channel")),
+                    userid=_session.get("userid"),
+                )
+                return {"success": False, "message": message}
 
             # Step 3: 用 StorageChain.rename_file + 115 API 完成重命名（文件夹+文件+Season目录）
             # 不走 transfer/manual，避免屏蔽词干扰
@@ -3254,6 +3334,7 @@ class ClSearch(_PluginBase):
 
     def _record_search_history(self, keyword: str, count: int) -> None:
         """记录搜索历史"""
+        self._reload_history_from_storage()
         self._search_history.insert(0, {
             "keyword": keyword,
             "count": count,
@@ -3261,9 +3342,11 @@ class ClSearch(_PluginBase):
         })
         self._search_history = self._search_history[:20]
         self.save_data(self._search_history_data_key, self._search_history)
+        logger.info(f"搜索历史已记录: {keyword}, 结果 {count} 条")
 
     def _record_offline_history(self, title: str, success: bool, error: str = "") -> None:
         """记录离线下载历史"""
+        self._reload_history_from_storage()
         self._offline_history.insert(0, {
             "title": title,
             "success": success,
@@ -3272,6 +3355,7 @@ class ClSearch(_PluginBase):
         })
         self._offline_history = self._offline_history[:20]
         self.save_data(self._offline_history_data_key, self._offline_history)
+        logger.info(f"离线下载历史已记录: {title}, success={success}, error={error or '无'}")
 
     def _send_search_results(self, keyword: str, results: List[dict]) -> None:
         """发送搜索结果通知，附带 detail_path 信息供智能体直接走115离线下载"""
@@ -3311,6 +3395,7 @@ class ClSearch(_PluginBase):
 
     def stop_service(self) -> None:
         """停止插件服务"""
+        global _CLSEARCH_ACTIVE_PLUGIN
         self._stop_polling()
         with self._task_lock:
             has_pending = bool(self._pending_tasks)
@@ -3325,10 +3410,30 @@ class ClSearch(_PluginBase):
             except Exception:
                 pass
         self._session = None
+        if _CLSEARCH_ACTIVE_PLUGIN is self:
+            _CLSEARCH_ACTIVE_PLUGIN = None
         logger.info("观影搜插件服务已停止")
 
 
 # ==================== 智能体工具 ====================
+
+def _get_clsearch_plugin():
+    """Return the live plugin instance used by agent tools."""
+    global _CLSEARCH_ACTIVE_PLUGIN
+    plugin = _CLSEARCH_ACTIVE_PLUGIN
+    if plugin and getattr(plugin, "_enabled", False):
+        return plugin
+    try:
+        from app.core.plugin import PluginManager
+        plugins = PluginManager().running_plugins
+        plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+        if plugin:
+            _CLSEARCH_ACTIVE_PLUGIN = plugin
+        return plugin
+    except Exception as e:
+        logger.warning(f"获取观影磁力搜运行实例失败: {e}")
+        return None
+
 
 class ClSearchSearchInput(BaseModel):
     """搜索工具入参模型"""
@@ -3372,9 +3477,7 @@ class ClSearchSearchTool(MoviePilotTool):
 
     async def run(self, keyword: str, **kwargs) -> str:
         try:
-            from app.core.plugin import PluginManager
-            plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            plugin = _get_clsearch_plugin()
             if not plugin:
                 return "观影磁力搜插件未运行，请先启用插件并配置站点信息"
 
@@ -3416,9 +3519,7 @@ class ClSearchDetailTool(MoviePilotTool):
 
     async def run(self, detail_path: str, **kwargs) -> str:
         try:
-            from app.core.plugin import PluginManager
-            plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            plugin = _get_clsearch_plugin()
             if not plugin:
                 return "观影磁力搜插件未运行"
 
@@ -3470,9 +3571,7 @@ class ClSearchOfflineResultTool(MoviePilotTool):
 
     async def run(self, keyword: str = "", index: int = 1, detail_path: str = "", search_type: str = "4", **kwargs) -> str:
         try:
-            from app.core.plugin import PluginManager
-            plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            plugin = _get_clsearch_plugin()
             if not plugin:
                 return "观影磁力搜插件未运行"
 
@@ -3535,9 +3634,7 @@ class ClSearchOfflineTool(MoviePilotTool):
 
     async def run(self, magnet: str, title: str = "", **kwargs) -> str:
         try:
-            from app.core.plugin import PluginManager
-            plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            plugin = _get_clsearch_plugin()
             if not plugin:
                 return "观影磁力搜插件未运行"
 
@@ -3587,9 +3684,7 @@ class ClSearchRenameTool(MoviePilotTool):
 
     async def run(self, cid: str, new_name: str = "", path: str = "", name: str = "", **kwargs) -> str:
         try:
-            from app.core.plugin import PluginManager
-            plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            plugin = _get_clsearch_plugin()
             if not plugin:
                 return "观影磁力搜插件未运行"
 
@@ -3643,9 +3738,7 @@ class ClSearchCompleteTaskTool(MoviePilotTool):
 
     async def run(self, task_name: str = "", **kwargs) -> str:
         try:
-            from app.core.plugin import PluginManager
-            plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            plugin = _get_clsearch_plugin()
             if not plugin:
                 return "观影磁力搜插件未运行"
 
@@ -3683,9 +3776,7 @@ class ClSearchMoveFileTool(MoviePilotTool):
 
     async def run(self, source_cid: str, target_path: str, task_name: str = "", **kwargs) -> str:
         try:
-            from app.core.plugin import PluginManager
-            plugins = PluginManager().running_plugins
-            plugin = plugins.get("ClSearch") or plugins.get("clsearch")
+            plugin = _get_clsearch_plugin()
             if not plugin:
                 return "观影磁力搜插件未运行"
 
