@@ -49,7 +49,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.8.6"
+    plugin_version = "1.5.8.7"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -2114,6 +2114,7 @@ class ClSearch(_PluginBase):
 
             storage_chain = StorageChain()
             transfer_chain = TransferChain()
+            is_tv = str(data.get("media_type") or "").strip().lower() in ("tv", "show", "电视剧", "series")
             folder_item = FileItem(
                 storage=storage_name,
                 fileid=cid,
@@ -2138,10 +2139,16 @@ class ClSearch(_PluginBase):
             )
 
             sub_files = storage_chain.list_files(renamed_folder_item) or []
+            video_exts = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m2ts', '.rmvb', '.rm', '.iso', '.vob', '.mpg', '.mpeg', '.m4v', '.3gp', '.f4v')
+            subtitle_exts = ('.srt', '.ass', '.ssa', '.sub', '.idx', '.vtt', '.smi', '.sami')
+            audio_exts = tuple(settings.RMT_AUDIOEXT or [])
             media_exts = tuple((settings.RMT_MEDIAEXT or []) + (settings.RMT_SUBEXT or []) + (settings.RMT_AUDIOEXT or []))
             count = 0
+            created_dirs = 0
             file_status_list = []
             needs_agent_files = []
+            deleted_cids = []
+            season_dir_cache = {}
             logger.info(f"MP原生递归重命名开始: 顶层文件 {len(sub_files)} 个, path={new_folder_path}")
 
             for sub_file in sub_files:
@@ -2159,8 +2166,16 @@ class ClSearch(_PluginBase):
                 extension = str(getattr(sub_file, "extension", "") or "").lower().lstrip(".")
                 if not extension:
                     extension = os.path.splitext(sub_name)[1].lower().lstrip(".")
-                if not extension or f".{extension}" not in media_exts:
-                    file_status_list.append({"old_name": sub_name, "new_name": sub_name, "status": "跳过（非媒体）"})
+                ext = f".{extension}" if extension else ""
+                if ext in subtitle_exts:
+                    file_status_list.append({"old_name": sub_name, "new_name": sub_name, "status": "保留（字幕）"})
+                    continue
+                if not extension or ext not in media_exts:
+                    if str(getattr(sub_file, "fileid", "") or ""):
+                        deleted_cids.append(str(getattr(sub_file, "fileid", "") or ""))
+                        file_status_list.append({"old_name": sub_name, "new_name": "", "status": "删除（非媒体文件）"})
+                    else:
+                        file_status_list.append({"old_name": sub_name, "new_name": sub_name, "status": "跳过（非媒体，无CID）"})
                     continue
 
                 sub_path = self._fileitem_path(sub_file, new_folder_path)
@@ -2168,15 +2183,21 @@ class ClSearch(_PluginBase):
                     context = MediaChain().recognize_by_path(Path(sub_path), obtain_images=False)
                     if not context or not context.media_info:
                         size_bytes = self._get_file_size_bytes(sub_file)
-                        needs_agent_files.append({
-                            "name": sub_name,
-                            "cid": str(getattr(sub_file, "fileid", "") or ""),
-                            "size": size_bytes,
-                            "size_text": self._format_size_text(size_bytes),
-                            "reason": "MP原生识别未命中",
-                        })
-                        file_status_list.append({"old_name": sub_name, "new_name": "", "status": f"保留（MP原生识别未命中，待智能体识别，{self._format_size_text(size_bytes)}）"})
-                        logger.warning(f"MP原生识别未命中，保留待确认: {sub_path}")
+                        is_small_ad, _ = self._is_small_ad_video(sub_file)
+                        if ext in video_exts and is_small_ad and str(getattr(sub_file, "fileid", "") or ""):
+                            deleted_cids.append(str(getattr(sub_file, "fileid", "") or ""))
+                            file_status_list.append({"old_name": sub_name, "new_name": "", "status": f"删除（MP原生未识别，小体积疑似广告，{self._format_size_text(size_bytes)}）"})
+                            logger.info(f"MP原生未识别，标记小体积疑似广告删除: {sub_path}, size={self._format_size_text(size_bytes)}")
+                        else:
+                            needs_agent_files.append({
+                                "name": sub_name,
+                                "cid": str(getattr(sub_file, "fileid", "") or ""),
+                                "size": size_bytes,
+                                "size_text": self._format_size_text(size_bytes),
+                                "reason": "MP原生识别未命中",
+                            })
+                            file_status_list.append({"old_name": sub_name, "new_name": "", "status": f"保留（MP原生识别未命中，待智能体识别，{self._format_size_text(size_bytes)}）"})
+                            logger.warning(f"MP原生识别未命中，保留待确认: {sub_path}")
                         continue
 
                     recommend_path = transfer_chain.recommend_name(meta=context.meta_info, mediainfo=context.media_info)
@@ -2204,11 +2225,78 @@ class ClSearch(_PluginBase):
                     if rename_result:
                         count += 1
                         file_status_list.append({"old_name": sub_name, "new_name": target_name, "status": "已重命名（MP原生）"})
+                        sub_name = target_name
+                        setattr(sub_file, "name", target_name)
                     else:
                         file_status_list.append({"old_name": sub_name, "new_name": target_name, "status": f"改名失败: rename_file 返回 {rename_result!r}"})
                 except Exception as e:
                     file_status_list.append({"old_name": sub_name, "new_name": "", "status": f"改名失败: {e}"})
                     logger.warning(f"MP原生文件重命名异常: {sub_name}, {e}")
+
+            if is_tv:
+                refreshed_files = storage_chain.list_files(renamed_folder_item) or []
+                top_folders = [item for item in refreshed_files if getattr(item, "type", "") == "dir"]
+                for item in refreshed_files:
+                    if getattr(item, "type", "") == "dir":
+                        continue
+                    item_name = str(getattr(item, "name", "") or "")
+                    item_ext = os.path.splitext(item_name)[1].lower()
+                    if item_ext not in video_exts:
+                        continue
+                    match = re.search(r'[Ss](\d+)[Ee](\d+)', item_name)
+                    if not match:
+                        continue
+                    season = int(match.group(1))
+                    season_dir_name = f"Season {season}"
+                    season_folder_cid = season_dir_cache.get(season)
+                    if not season_folder_cid:
+                        for folder in top_folders:
+                            if (getattr(folder, "name", "") or "") == season_dir_name:
+                                season_folder_cid = str(getattr(folder, "fileid", "") or "")
+                                season_dir_cache[season] = season_folder_cid
+                                break
+                    if not season_folder_cid:
+                        create_result = self._api_create_folder({"cid": cid, "name": season_dir_name, "path": new_folder_path})
+                        if create_result.get("success"):
+                            season_folder_cid = create_result.get("data", {}).get("cid") or ""
+                            created_dirs += 1
+                            season_dir_cache[season] = season_folder_cid
+                            if not season_folder_cid:
+                                try:
+                                    refreshed_top = storage_chain.list_files(renamed_folder_item) or []
+                                    for folder in refreshed_top:
+                                        if getattr(folder, "type", "") == "dir" and (getattr(folder, "name", "") or "") == season_dir_name:
+                                            season_folder_cid = str(getattr(folder, "fileid", "") or "")
+                                            season_dir_cache[season] = season_folder_cid
+                                            break
+                                except Exception as e:
+                                    logger.warning(f"MP原生后处理查找Season目录异常: {e}")
+                    if not season_folder_cid:
+                        file_status_list.append({"old_name": item_name, "new_name": item_name, "status": f"移动失败: 创建{season_dir_name}失败"})
+                        continue
+                    item_cid = str(getattr(item, "fileid", "") or "")
+                    if not item_cid:
+                        continue
+                    move_result = self._api_move_file({
+                        "cid": item_cid,
+                        "target_cid": season_folder_cid,
+                        "path": self._fileitem_path(item, new_folder_path),
+                        "name": item_name,
+                        "target_path": self._join_u115_path(new_folder_path, season_dir_name),
+                        "type": "file",
+                    })
+                    if move_result.get("success"):
+                        file_status_list.append({"old_name": item_name, "new_name": f"{season_dir_name}/{item_name}", "status": "已移动到Season目录"})
+                    else:
+                        file_status_list.append({"old_name": item_name, "new_name": f"{season_dir_name}/{item_name}", "status": f"移动失败: {move_result.get('message')}"})
+
+            if deleted_cids:
+                logger.info(f"MP原生后处理准备删除 {len(deleted_cids)} 个非媒体文件")
+                delete_result = self._api_delete_files({"cids": deleted_cids})
+                if delete_result.get("success"):
+                    logger.info(f"MP原生后处理非媒体文件删除成功: {len(deleted_cids)} 个")
+                else:
+                    logger.warning(f"MP原生后处理非媒体文件删除失败: {delete_result.get('message')}")
 
             failure_statuses = [
                 f for f in file_status_list
@@ -2222,11 +2310,11 @@ class ClSearch(_PluginBase):
                     "fallback": False,
                     "files": file_status_list,
                     "renamed": count,
-                    "created_dirs": 0,
+                    "created_dirs": created_dirs,
                     "needs_agent_files": needs_agent_files,
                 }
 
-            message = f"MP原生递归重命名完成: 目录已改名, 文件 {count} 个"
+            message = f"MP原生递归重命名完成: 目录已改名, 文件 {count} 个, 创建Season目录 {created_dirs} 个"
             if needs_agent_files:
                 message += f", {len(needs_agent_files)} 个文件待智能体确认"
             return {
@@ -2235,7 +2323,7 @@ class ClSearch(_PluginBase):
                 "fallback": False,
                 "files": file_status_list,
                 "renamed": count,
-                "created_dirs": 0,
+                "created_dirs": created_dirs,
                 "needs_agent_files": needs_agent_files,
             }
         except Exception as e:
