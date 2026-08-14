@@ -4,7 +4,7 @@
   "description": "搜索影视磁力资源，选择版本后直接添加到115网盘离线下载。",
   "version": "1.5.8.8",
   "author": "chaomarks",
-  "author_url": "https://github.com/jxxghp/MoviePilot",
+  "author_url": "https://github.com/chaomarks/MoviePilot-Plugins",
   "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
   "plugin_order": 50,
   "auth_level": 1,
