@@ -49,7 +49,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.8.5"
+    plugin_version = "1.5.8.6"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -986,6 +986,15 @@ class ClSearch(_PluginBase):
     def _u115_path_name(file_path: str) -> str:
         """从115路径中提取最后一级名称，兼容目录尾部斜杠。"""
         return str(file_path or "").strip().replace("\\", "/").rstrip("/").split("/")[-1]
+
+    @staticmethod
+    def _fileitem_path(fileitem: Any, parent_path: str = "") -> str:
+        """Return a usable full path for a FileItem-like object."""
+        raw_path = str(getattr(fileitem, "path", "") or "").strip().replace("\\", "/")
+        name = str(getattr(fileitem, "name", "") or "").strip()
+        if raw_path and (not name or raw_path.rstrip("/").endswith(f"/{name}") or raw_path.rstrip("/") == name):
+            return raw_path
+        return ClSearch._join_u115_path(parent_path, name)
 
     def _persist_site_cookie(self) -> None:
         """将自动登录获得的 Cookie 写回配置，避免重复登录。"""
@@ -2081,6 +2090,158 @@ class ClSearch(_PluginBase):
         except Exception as e:
             return {"success": False, "message": f"重命名失败: {str(e)}"}
 
+    def _api_mp_native_recursive_rename(self, data: dict = None) -> dict:
+        """Use MoviePilot file manager's native recursive rename logic."""
+        data = data or {}
+        cid = str(data.get("cid") or data.get("fileid") or "").strip()
+        file_path = self._join_u115_path(str(data.get("path") or data.get("file_path") or "").strip())
+        new_name = str(data.get("new_name") or data.get("name") or "").strip()
+        old_name = self._u115_path_name(file_path) or str(data.get("old_name") or data.get("task_name") or cid).strip()
+        storage_name = str(data.get("storage") or "u115").lower()
+        cancel_key = str(data.get("info_hash") or "").strip().lower()
+
+        if not new_name:
+            return {"success": False, "message": "缺少新名称 new_name", "fallback": False}
+        if not cid:
+            return {"success": False, "message": "缺少115目录CID，无法重命名", "fallback": False}
+
+        try:
+            from app.chain.media import MediaChain
+            from app.chain.storage import StorageChain
+            from app.chain.transfer import TransferChain
+            from app.core.config import settings
+            from app.schemas import FileItem
+
+            storage_chain = StorageChain()
+            transfer_chain = TransferChain()
+            folder_item = FileItem(
+                storage=storage_name,
+                fileid=cid,
+                type="dir",
+                name=old_name,
+                path=file_path,
+            )
+
+            logger.info(f"MP原生重命名目录: {old_name} -> {new_name}, cid={cid}")
+            folder_result = storage_chain.rename_file(folder_item, new_name)
+            logger.info(f"MP原生目录rename_file响应: {folder_result}")
+            if not folder_result:
+                return {"success": False, "message": f"目录重命名失败: rename_file 返回 {folder_result!r}", "fallback": True, "files": []}
+
+            new_folder_path = self._join_u115_path(str(Path(file_path).parent).replace("\\", "/"), new_name)
+            renamed_folder_item = FileItem(
+                storage=storage_name,
+                fileid=cid,
+                type="dir",
+                name=new_name,
+                path=new_folder_path,
+            )
+
+            sub_files = storage_chain.list_files(renamed_folder_item) or []
+            media_exts = tuple((settings.RMT_MEDIAEXT or []) + (settings.RMT_SUBEXT or []) + (settings.RMT_AUDIOEXT or []))
+            count = 0
+            file_status_list = []
+            needs_agent_files = []
+            logger.info(f"MP原生递归重命名开始: 顶层文件 {len(sub_files)} 个, path={new_folder_path}")
+
+            for sub_file in sub_files:
+                if not self._enabled or (self._polling_stop and self._polling_stop.is_set()):
+                    logger.info("插件已停止，中断MP原生递归重命名")
+                    break
+                if cancel_key and self._cancel_flags.get(cancel_key):
+                    logger.info(f"任务已取消，中断MP原生递归重命名: info_hash={cancel_key}")
+                    break
+
+                sub_name = str(getattr(sub_file, "name", "") or "")
+                if getattr(sub_file, "type", "") == "dir":
+                    file_status_list.append({"old_name": sub_name, "new_name": sub_name, "status": "跳过（目录）"})
+                    continue
+                extension = str(getattr(sub_file, "extension", "") or "").lower().lstrip(".")
+                if not extension:
+                    extension = os.path.splitext(sub_name)[1].lower().lstrip(".")
+                if not extension or f".{extension}" not in media_exts:
+                    file_status_list.append({"old_name": sub_name, "new_name": sub_name, "status": "跳过（非媒体）"})
+                    continue
+
+                sub_path = self._fileitem_path(sub_file, new_folder_path)
+                try:
+                    context = MediaChain().recognize_by_path(Path(sub_path), obtain_images=False)
+                    if not context or not context.media_info:
+                        size_bytes = self._get_file_size_bytes(sub_file)
+                        needs_agent_files.append({
+                            "name": sub_name,
+                            "cid": str(getattr(sub_file, "fileid", "") or ""),
+                            "size": size_bytes,
+                            "size_text": self._format_size_text(size_bytes),
+                            "reason": "MP原生识别未命中",
+                        })
+                        file_status_list.append({"old_name": sub_name, "new_name": "", "status": f"保留（MP原生识别未命中，待智能体识别，{self._format_size_text(size_bytes)}）"})
+                        logger.warning(f"MP原生识别未命中，保留待确认: {sub_path}")
+                        continue
+
+                    recommend_path = transfer_chain.recommend_name(meta=context.meta_info, mediainfo=context.media_info)
+                    if not recommend_path:
+                        size_bytes = self._get_file_size_bytes(sub_file)
+                        needs_agent_files.append({
+                            "name": sub_name,
+                            "cid": str(getattr(sub_file, "fileid", "") or ""),
+                            "size": size_bytes,
+                            "size_text": self._format_size_text(size_bytes),
+                            "reason": "MP原生未生成新名称",
+                        })
+                        file_status_list.append({"old_name": sub_name, "new_name": "", "status": f"保留（MP原生未生成新名称，待智能体识别，{self._format_size_text(size_bytes)}）"})
+                        logger.warning(f"MP原生未生成新名称，保留待确认: {sub_path}")
+                        continue
+
+                    target_name = Path(recommend_path).name
+                    if not target_name or target_name == sub_name:
+                        file_status_list.append({"old_name": sub_name, "new_name": target_name or sub_name, "status": "无需重命名"})
+                        continue
+
+                    setattr(sub_file, "path", sub_path)
+                    rename_result = storage_chain.rename_file(sub_file, target_name)
+                    logger.info(f"MP原生文件rename_file响应: {sub_name} -> {target_name}, result={rename_result}")
+                    if rename_result:
+                        count += 1
+                        file_status_list.append({"old_name": sub_name, "new_name": target_name, "status": "已重命名（MP原生）"})
+                    else:
+                        file_status_list.append({"old_name": sub_name, "new_name": target_name, "status": f"改名失败: rename_file 返回 {rename_result!r}"})
+                except Exception as e:
+                    file_status_list.append({"old_name": sub_name, "new_name": "", "status": f"改名失败: {e}"})
+                    logger.warning(f"MP原生文件重命名异常: {sub_name}, {e}")
+
+            failure_statuses = [
+                f for f in file_status_list
+                if any(flag in str(f.get("status") or "") for flag in ("失败", "改名失败"))
+            ]
+            if failure_statuses:
+                message = f"MP原生递归重命名部分失败: {len(failure_statuses)} 个文件失败，成功重命名 {count} 个"
+                return {
+                    "success": False,
+                    "message": message,
+                    "fallback": False,
+                    "files": file_status_list,
+                    "renamed": count,
+                    "created_dirs": 0,
+                    "needs_agent_files": needs_agent_files,
+                }
+
+            message = f"MP原生递归重命名完成: 目录已改名, 文件 {count} 个"
+            if needs_agent_files:
+                message += f", {len(needs_agent_files)} 个文件待智能体确认"
+            return {
+                "success": True,
+                "message": message,
+                "fallback": False,
+                "files": file_status_list,
+                "renamed": count,
+                "created_dirs": 0,
+                "needs_agent_files": needs_agent_files,
+            }
+        except Exception as e:
+            logger.warning(f"MP原生递归重命名不可用，准备回落旧逻辑: {e}")
+            return {"success": False, "message": f"MP原生递归重命名不可用: {e}", "fallback": True, "files": []}
+
     def _find_cid_by_path(self, target_path: str) -> Optional[str]:
         """根据115网盘路径逐层查找目录CID
 
@@ -2458,6 +2619,12 @@ class ClSearch(_PluginBase):
             return {"success": False, "message": "缺少115目录CID，无法重命名"}
         if not old_name:
             old_name = str(data.get("task_name") or cid).strip()
+
+        if not data.get("_skip_mp_native"):
+            native_result = self._api_mp_native_recursive_rename(data)
+            if native_result.get("success") or not native_result.get("fallback"):
+                return native_result
+            logger.warning(f"MP原生递归重命名回落旧逻辑: {native_result.get('message')}")
 
         is_tv = media_type in ("tv", "show", "电视剧", "series")
         # 用于文件名的基础标题：去掉年份和tmdbid后的纯标题
