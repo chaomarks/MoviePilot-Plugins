@@ -49,7 +49,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.8.4"
+    plugin_version = "1.5.8.5"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -71,6 +71,7 @@ class ClSearch(_PluginBase):
     _save_dir_id = ""
     _resolved_path = ""  # CID 解析出的完整路径
     _auto_transfer = False  # 离线下载完成后自动整理
+    _ad_video_max_size_mb = 300  # 小于该大小的无法识别视频才自动当广告删除
 
     # 运行参数
     _request_timeout = 30
@@ -122,6 +123,7 @@ class ClSearch(_PluginBase):
         self._resolved_path = ""
         self._session = None
         self._auto_transfer = False
+        self._ad_video_max_size_mb = 300
 
         if not config:
             if _CLSEARCH_ACTIVE_PLUGIN is self:
@@ -137,6 +139,7 @@ class ClSearch(_PluginBase):
         # 从配置中读取解析路径
         self._resolved_path = str(config.get("resolved_path") or "")
         self._auto_transfer = bool(config.get("auto_transfer"))
+        self._ad_video_max_size_mb = self._safe_int(config.get("ad_video_max_size_mb", 300), 300, minimum=0, maximum=10240)
         self._config = dict(config)
         _CLSEARCH_ACTIVE_PLUGIN = self
 
@@ -463,6 +466,35 @@ class ClSearch(_PluginBase):
                         "component": "VDivider",
                         "props": {"class": "mt-4 mb-4"},
                     },
+                    # 广告视频删除阈值
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "ad_video_max_size_mb",
+                                            "label": "广告视频自动删除阈值(MB)",
+                                            "placeholder": "300",
+                                            "type": "number",
+                                            "hint": "无法识别剧集信息的视频小于该大小才自动删除；0表示不自动删除视频",
+                                            "persistent-hint": True,
+                                            "density": "compact",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # ========== 分隔线 ==========
+                    {
+                        "component": "VDivider",
+                        "props": {"class": "mt-4 mb-4"},
+                    },
                 ],
             }
         ], {
@@ -474,6 +506,7 @@ class ClSearch(_PluginBase):
             "save_dir_id": "",
             "resolved_path": "",
             "auto_transfer": False,
+            "ad_video_max_size_mb": 300,
         }
 
     def get_page(self) -> List[dict]:
@@ -968,6 +1001,7 @@ class ClSearch(_PluginBase):
                 "save_dir_id": self._save_dir_id,
                 "resolved_path": self._resolved_path,
                 "auto_transfer": self._auto_transfer,
+                "ad_video_max_size_mb": self._ad_video_max_size_mb,
             }
             if hasattr(self, "_config") and isinstance(getattr(self, "_config"), dict):
                 config.update(dict(getattr(self, "_config")))
@@ -986,6 +1020,65 @@ class ClSearch(_PluginBase):
         if maximum is not None:
             number = min(number, maximum)
         return number
+
+    def _get_file_size_bytes(self, item: Any) -> int:
+        """Best-effort extraction of file size from MoviePilot/115 file items."""
+        for attr in ("size", "file_size", "filesize", "fileSize", "fs", "bytes"):
+            value = getattr(item, attr, None)
+            if value is None and isinstance(item, dict):
+                value = item.get(attr)
+            size = self._parse_size_bytes(value)
+            if size > 0:
+                return size
+        return 0
+
+    @staticmethod
+    def _parse_size_bytes(value: Any) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip()
+        if not text:
+            return 0
+        compact = text.replace(",", "").replace(" ", "")
+        try:
+            if compact.isdigit():
+                return int(compact)
+        except Exception:
+            pass
+        match = re.match(r"(?i)^([0-9]+(?:\.[0-9]+)?)(b|kb|k|mb|m|gb|g|tb|t)?$", compact)
+        if not match:
+            return 0
+        number = float(match.group(1))
+        unit = (match.group(2) or "b").lower()
+        factor = {
+            "b": 1,
+            "k": 1024,
+            "kb": 1024,
+            "m": 1024 ** 2,
+            "mb": 1024 ** 2,
+            "g": 1024 ** 3,
+            "gb": 1024 ** 3,
+            "t": 1024 ** 4,
+            "tb": 1024 ** 4,
+        }.get(unit, 1)
+        return int(number * factor)
+
+    def _is_small_ad_video(self, item: Any) -> Tuple[bool, int]:
+        size_bytes = self._get_file_size_bytes(item)
+        threshold_mb = self._safe_int(self._ad_video_max_size_mb, 300, minimum=0, maximum=10240)
+        if threshold_mb <= 0 or size_bytes <= 0:
+            return False, size_bytes
+        return size_bytes <= threshold_mb * 1024 * 1024, size_bytes
+
+    @staticmethod
+    def _format_size_text(size_bytes: int) -> str:
+        if size_bytes <= 0:
+            return "大小未知"
+        if size_bytes >= 1024 ** 3:
+            return f"{size_bytes / 1024 / 1024 / 1024:.2f}GB"
+        return f"{size_bytes / 1024 / 1024:.1f}MB"
 
     def _cache_search_results(self, cache_key: str, results: List[dict]) -> None:
         self._search_cache[cache_key] = results
@@ -2431,6 +2524,7 @@ class ClSearch(_PluginBase):
         count = 0
         created_dirs = 0
         file_status_list = []
+        needs_agent_files = []
 
         try:
             from app.chain.storage import StorageChain
@@ -2457,6 +2551,7 @@ class ClSearch(_PluginBase):
                     "files": [],
                     "renamed": 0,
                     "created_dirs": 0,
+                    "needs_agent_files": [],
                 }
 
             # 递归收集所有层级的视频文件
@@ -2507,10 +2602,15 @@ class ClSearch(_PluginBase):
 
             logger.info(f"递归收集完成: 视频文件 {len(all_media_files)} 个, 非视频文件 {len(all_other_files)} 个, 顶层子目录 {len(top_sub_folders)} 个")
 
+            def _size_text(size_bytes: int) -> str:
+                return self._format_size_text(size_bytes)
+
             # 缓存 Season 目录 CID，避免重复创建
             season_dir_cache = {}  # {season_number: cid}
-            # 收集需要删除的文件CID（广告文件、无剧集信息的视频、非媒体文件）
+            # 收集需要删除的文件CID（小体积疑似广告、非媒体文件）
             deleted_cids = []
+            # 收集无法安全自动判断的视频，交给智能体/人工确认
+            needs_agent_files = []
             # 记录已处理的集数，用于检测重复集数
             processed_episodes = set()  # {(season, episode)}
 
@@ -2547,17 +2647,39 @@ class ClSearch(_PluginBase):
                     season = 1
                     episode = int(ep_match.group(1))
                 else:
-                    file_status_list.append({"old_name": original_name, "new_name": "", "status": "删除（无剧集信息）"})
-                    logger.info(f"标记删除（无剧集信息）: {original_name}")
-                    deleted_cids.append(file_cid)
+                    is_small_ad, size_bytes = self._is_small_ad_video(file_item)
+                    if is_small_ad:
+                        status = f"删除（小体积疑似广告，{_size_text(size_bytes)}）"
+                        file_status_list.append({"old_name": original_name, "new_name": "", "status": status})
+                        logger.info(f"标记删除（小体积疑似广告）: {original_name}, size={_size_text(size_bytes)}")
+                        deleted_cids.append(file_cid)
+                    else:
+                        status = f"保留（无剧集信息，待智能体识别，{_size_text(size_bytes)}）"
+                        file_status_list.append({"old_name": original_name, "new_name": "", "status": status})
+                        needs_agent_files.append({
+                            "name": original_name,
+                            "cid": file_cid,
+                            "size": size_bytes,
+                            "size_text": _size_text(size_bytes),
+                            "reason": "无剧集信息",
+                        })
+                        logger.warning(f"保留待智能体识别（无剧集信息）: {original_name}, size={_size_text(size_bytes)}")
                     continue
 
                 # 检测重复集数（BT源可能包含重复文件）
                 ep_key = (season, episode)
                 if ep_key in processed_episodes:
-                    file_status_list.append({"old_name": original_name, "new_name": "", "status": "删除（重复集数）"})
-                    logger.info(f"标记删除（重复集数）: {original_name} (S{season:02d}E{episode:02d})")
-                    deleted_cids.append(file_cid)
+                    size_bytes = self._get_file_size_bytes(file_item)
+                    status = f"保留（重复集数，待智能体识别，{_size_text(size_bytes)}）"
+                    file_status_list.append({"old_name": original_name, "new_name": "", "status": status})
+                    needs_agent_files.append({
+                        "name": original_name,
+                        "cid": file_cid,
+                        "size": size_bytes,
+                        "size_text": _size_text(size_bytes),
+                        "reason": f"重复集数 S{season:02d}E{episode:02d}",
+                    })
+                    logger.warning(f"保留待智能体识别（重复集数）: {original_name} (S{season:02d}E{episode:02d}), size={_size_text(size_bytes)}")
                     continue
                 processed_episodes.add(ep_key)
 
@@ -2693,6 +2815,9 @@ class ClSearch(_PluginBase):
                 else:
                     logger.warning(f"广告/无用文件删除失败: {delete_result.get('message')}")
 
+            if needs_agent_files:
+                logger.warning(f"递归重命名保留 {len(needs_agent_files)} 个文件待智能体识别/确认")
+
         except Exception as e:
             logger.error(f"递归重命名内部文件异常: {e}")
             return {
@@ -2701,6 +2826,7 @@ class ClSearch(_PluginBase):
                 "files": file_status_list,
                 "renamed": count,
                 "created_dirs": created_dirs,
+                "needs_agent_files": needs_agent_files,
             }
 
         failure_statuses = [
@@ -2716,6 +2842,7 @@ class ClSearch(_PluginBase):
                 "files": file_status_list,
                 "renamed": count,
                 "created_dirs": created_dirs,
+                "needs_agent_files": needs_agent_files,
             }
 
         logger.info(f"递归重命名完成: 目录已改名, 文件 {count} 个, 创建Season目录 {created_dirs} 个")
@@ -2725,6 +2852,7 @@ class ClSearch(_PluginBase):
             "files": file_status_list,
             "renamed": count,
             "created_dirs": created_dirs,
+            "needs_agent_files": needs_agent_files,
         }
 
 
@@ -2954,12 +3082,12 @@ class ClSearch(_PluginBase):
             )
 
     def _trigger_transfer(self, task_name: str, task: dict, info_hash: str = "") -> dict:
-        """自动整理：离线完成后调用内置rename API重命名文件并删除广告，然后通知智能体移动
+        """自动整理：离线完成后调用内置rename API重命名文件并清理小体积广告，然后通知智能体移动
 
         完整流程：
         1. 在115网盘的离线目录中查找下载完成的文件夹
         2. 识别媒体信息，确定规范的文件夹名（含tmdbID）
-        3. 调用内置rename API原地重命名文件夹和内部文件（含创建Season子目录），并删除无法重命名的广告文件
+        3. 调用内置rename API原地重命名文件夹和内部文件（含创建Season子目录），仅删除小体积疑似广告文件
         4. 记录待整理任务，通知智能体处理整体移动
         """
         try:
@@ -3092,6 +3220,7 @@ class ClSearch(_PluginBase):
                 "info_hash": info_hash,
             })
             logger.info(f"重命名结果: {rename_result.get('message', '未知')}")
+            needs_agent_files = rename_result.get("needs_agent_files") or []
             if not rename_result.get("success"):
                 self.post_message(
                     title="115重命名失败",
@@ -3126,6 +3255,7 @@ class ClSearch(_PluginBase):
                 "tmdb_id": tmdb_id,
                 "folder_cid": folder_cid,
                 "needs_agent_target_match": True,
+                "needs_agent_files": needs_agent_files,
             })
             self._update_offline_task_status(info_hash, "重命名完成，待智能体移动", folder_cid=folder_cid, path=final_path)
 
@@ -3133,6 +3263,21 @@ class ClSearch(_PluginBase):
             _title_for_notify = re.sub(r"^\[[^\]]*\]\s*", "", task_name)
             _match = re.match(r"^([^\.\[]+)", _title_for_notify)
             _clean_name = _match.group(1).strip() if _match else _title_for_notify.strip()
+
+            agent_file_text = ""
+            if needs_agent_files:
+                agent_file_lines = []
+                for item in needs_agent_files[:20]:
+                    agent_file_lines.append(
+                        f"- {item.get('name')} | CID: {item.get('cid')} | 大小: {item.get('size_text') or self._format_size_text(self._safe_int(item.get('size'), 0))} | 原因: {item.get('reason')}"
+                    )
+                if len(needs_agent_files) > 20:
+                    agent_file_lines.append(f"- 还有 {len(needs_agent_files) - 20} 个文件未列出，请查看待整理任务记录")
+                agent_file_text = (
+                    f"\n\n以下 {len(needs_agent_files)} 个视频未自动删除，需要先识别/确认后再整理：\n"
+                    + "\n".join(agent_file_lines)
+                    + "\n请不要直接删除这些文件；如能判断是正片，请按正确剧集信息重命名/移动，无法判断时回复用户确认。"
+                )
 
             # 构造发给智能体的消息
             agent_message = (
@@ -3154,6 +3299,7 @@ class ClSearch(_PluginBase):
                 f"   - source_cid: {folder_cid}（源文件夹CID）\n"
                 f"   - target_path: 目标目录的115网盘完整路径\n"
                 f"   - task_name: {task_name}\n"
+                f"{agent_file_text}"
                 f"\n注意：文件移动由插件直接执行，无需智能体拥有文件操作权限。"
                 f"插件会自动根据目标路径查找CID并完成移动，移动成功后自动清除待整理任务记录。"
                 f"\n如果因目录映射配置查询失败或目标路径不存在导致无法移动，请将具体失败原因直接回复给当前消息渠道通知用户。"
@@ -3176,6 +3322,8 @@ class ClSearch(_PluginBase):
             notify_content += f"CID: `{folder_cid}`\n"
             if media_type:
                 notify_content += f"媒体类型: {media_type}\n"
+            if needs_agent_files:
+                notify_content += f"有 {len(needs_agent_files)} 个文件未自动删除，已交给智能体确认\n"
             notify_content += "已通知智能体处理移动"
 
             self.post_message(
@@ -3191,6 +3339,7 @@ class ClSearch(_PluginBase):
             return {
                 "needs_agent": True,
                 "folder_cid": folder_cid,
+                "needs_agent_files": needs_agent_files,
                 "agent_message": agent_message,
             }
 
