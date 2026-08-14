@@ -49,7 +49,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.5.8.7"
+    plugin_version = "1.5.8.8"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -297,7 +297,7 @@ class ClSearch(_PluginBase):
                                             "density": "compact",
                                             "class": "mt-2",
                                         },
-                                        "text": "（此插件仅通过智能体工具调用）",
+                                        "text": "（此插件仅通过智能体工具调用，且需登录MP内置115存储）",
                                     }
                                 ],
                             },
