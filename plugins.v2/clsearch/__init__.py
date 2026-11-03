@@ -58,7 +58,7 @@ class ClSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png"
     # 插件版本
-    plugin_version = "1.6.0"
+    plugin_version = "1.6.1"
     # 插件作者
     plugin_author = "chaomarks"
     # 作者主页
@@ -450,13 +450,13 @@ class ClSearch(_PluginBase):
                             },
                         ],
                     },
-                    # 目录CID + 解析路径（同一行）
+                    # 目录CID + 解析路径 + 广告阈值（同一行）
                     {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -473,7 +473,7 @@ class ClSearch(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -489,26 +489,15 @@ class ClSearch(_PluginBase):
                                     }
                                 ],
                             },
-                        ],
-                    },
-                    # ========== 分隔线 ==========
-                    {
-                        "component": "VDivider",
-                        "props": {"class": "mt-4 mb-4"},
-                    },
-                    # 广告视频删除阈值
-                    {
-                        "component": "VRow",
-                        "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "ad_video_max_size_mb",
-                                            "label": "广告视频自动删除阈值(MB)",
+                                            "label": "广告视频删除阈值(MB)",
                                             "placeholder": "300",
                                             "type": "number",
                                             "hint": "无法识别剧集信息的视频小于该大小才自动删除；0表示不自动删除视频",
