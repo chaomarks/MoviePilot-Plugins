@@ -48,7 +48,11 @@ class OfflineOrganizer:
     # ==================== 对外入口 ====================
 
     def list_offline_entries(self, keyword: str = "") -> Dict[str, Any]:
-        """列出配置的 115 离线下载目录内容。"""
+        """列出配置的 115 离线下载目录内容。
+
+        注意：115 fs_files 返回中，文件的 `cid` 是其父目录ID，真正的文件ID
+        需要通过 StorageChain.list_files 的 FileItem.fileid 获取。
+        """
         if not self._enabled:
             return {"success": False, "message": "插件未启用"}
         if not self._p115_cookie:
@@ -58,6 +62,30 @@ class OfflineOrganizer:
 
         keyword = str(keyword or "").strip().lower()
         entries: List[Dict[str, Any]] = []
+        # 用 StorageChain 拿真实 fileid（文件的 cid 字段是父目录ID，不能用于移动）
+        file_ids: Dict[str, str] = {}
+        try:
+            from app.chain.storage import StorageChain
+            from app.schemas import FileItem
+
+            parent_name = self._get_cid_name(self._save_dir_id) or ""
+            parent_item = FileItem(
+                storage="u115",
+                fileid=self._save_dir_id,
+                type="dir",
+                name=parent_name,
+                path=self._join_u115_path(self._resolved_path) if self._resolved_path else "",
+            )
+            for fi in StorageChain().list_files(parent_item) or []:
+                if str(getattr(fi, "type", "") or "") != "file":
+                    continue
+                fi_name = str(getattr(fi, "name", "") or "")
+                fi_id = str(getattr(fi, "fileid", "") or "")
+                if fi_name and fi_id:
+                    file_ids[fi_name] = fi_id
+        except Exception as e:
+            logger.warning(f"StorageChain 获取文件ID失败，将退回 cid 字段: {e}")
+
         try:
             client = P115Client(self._normalize_cookie(self._p115_cookie))
             offset = 0
@@ -81,9 +109,11 @@ class OfflineOrganizer:
                     is_dir = fc == "0" or (not fc and not has_size)
                     size = self._parse_size_bytes(item.get("s") or item.get("size") or item.get("file_size"))
                     modified = self._format_ts(item.get("t") or item.get("mtime") or item.get("utime"))
+                    # 文件用真实 fileid；目录用 cid
+                    entry_id = str(item.get("cid") or "") if is_dir else file_ids.get(name, "")
                     entries.append({
                         "name": name,
-                        "cid": str(item.get("cid") or ""),
+                        "cid": entry_id or str(item.get("cid") or ""),
                         "type": "dir" if is_dir else "file",
                         "size": size,
                         "size_text": self._format_size_text(size) if size else "",
@@ -243,21 +273,33 @@ class OfflineOrganizer:
 
         try:
             client = P115Client(self._normalize_cookie(self._p115_cookie))
-            storage_chain = None
-            try:
-                from app.chain.storage import StorageChain
-                from app.schemas import FileItem
+            # 1. 用 StorageChain 拿到所有散落文件及其真实 fileid
+            # （115 fs_files 返回中文件的 cid 是父目录ID，不能用于移动）
+            from app.chain.storage import StorageChain
+            from app.schemas import FileItem
 
-                storage_chain = StorageChain()
-            except Exception as e:
-                logger.warning(f"StorageChain 不可用，仅使用 p115client: {e}")
-
-            # 1. 找到所有同目录散落文件
-            listing = self.list_offline_entries()
-            files = [
-                item for item in (listing.get("data") or [])
-                if item.get("type") == "file"
-            ]
+            storage_chain = StorageChain()
+            parent_name = self._get_cid_name(self._save_dir_id) or ""
+            parent_path = self._join_u115_path(self._resolved_path) if self._resolved_path else ""
+            parent_item = FileItem(
+                storage="u115",
+                fileid=self._save_dir_id,
+                type="dir",
+                name=parent_name,
+                path=parent_path,
+            )
+            files: List[Dict[str, Any]] = []
+            for fi in storage_chain.list_files(parent_item) or []:
+                if str(getattr(fi, "type", "") or "") != "file":
+                    continue
+                fi_name = str(getattr(fi, "name", "") or "")
+                fi_id = str(getattr(fi, "fileid", "") or "")
+                if fi_name and fi_id:
+                    files.append({
+                        "name": fi_name,
+                        "cid": fi_id,
+                        "path": str(getattr(fi, "path", "") or fi_name),
+                    })
             if not files:
                 return {"success": False, "message": "离线目录中没有散落文件"}
 
@@ -350,6 +392,7 @@ class OfflineOrganizer:
             for item in files:
                 name = item.get("name") or ""
                 item_cid = item.get("cid") or ""
+                item_path = item.get("path") or self._join_u115_path(self._resolved_path, name)
                 if not item_cid:
                     continue
                 try:
@@ -380,7 +423,7 @@ class OfflineOrganizer:
                     move_result = self._api_move_file({
                         "cid": item_cid,
                         "target_cid": target_cid_for_files,
-                        "path": self._join_u115_path(self._resolved_path, name),
+                        "path": item_path,
                         "name": name,
                         "target_path": dest_path,
                         "type": "file",
