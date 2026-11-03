@@ -104,9 +104,11 @@ class OfflineOrganizer:
         target_path: str = "",
         move: bool = False,
     ) -> Dict[str, Any]:
-        """整理离线目录中的指定文件夹。
+        """整理离线目录中的指定文件夹或散落文件。
 
         folder_name 与 cid 至少提供一个；都不提供时返回目录候选列表。
+        cid 指向文件时按“散落文件整理”：根据文件名识别媒体，归入同一个
+        标准命名的剧集/电影目录后再整体移动。
         target_path 有值或 move=True 时，整理完成后立即移动到目标目录。
         """
         if not self._enabled:
@@ -163,6 +165,15 @@ class OfflineOrganizer:
                     "path": self._resolved_path,
                 }
 
+        # 判断 cid 指向的是文件夹还是散落的文件
+        entry_type = self._probe_entry_type(folder_cid, folder_name)
+        if entry_type == "file":
+            return self._organize_loose_files(
+                file_cid=folder_cid,
+                file_name=folder_name,
+                target_path=target_path,
+            )
+
         result = self._trigger_transfer(folder_name, {"folder_cid": folder_cid, "name": folder_name}, notify=False)
         if not isinstance(result, dict):
             return {"success": False, "message": "整理失败：插件未返回结果"}
@@ -198,6 +209,250 @@ class OfflineOrganizer:
                 if payload["move"].get("success"):
                     payload["message"] = f"整理并移动完成: {payload['new_folder_name']} -> {target_path}"
         return payload
+
+    def _probe_entry_type(self, cid: str, name: str) -> str:
+        """判断离线目录中的条目是文件夹还是文件。"""
+        try:
+            client = P115Client(self._normalize_cookie(self._p115_cookie))
+            result = client.fs_files({
+                "cid": self._save_dir_id,
+                "limit": 1000,
+                "offset": 0,
+            })
+            items = result.get("data") if isinstance(result, dict) else None
+            for item in items or []:
+                if str(item.get("cid") or "") == str(cid):
+                    fc = str(item.get("fc", "") or "")
+                    if fc == "0":
+                        return "dir"
+                    return "file"
+        except Exception as e:
+            logger.warning(f"探测离线条目类型失败: {e}")
+        return "dir"
+
+    def _organize_loose_files(self, file_cid: str, file_name: str, target_path: str = "") -> Dict[str, Any]:
+        """整理散落在离线目录中的视频文件（没有文件夹包裹）。
+
+        流程（照搬 MP 整理方案）：
+        1. 按文件名识别媒体，得到标题/年份/类型/TMDB ID
+        2. 在离线目录创建标准命名的目录（电影：标题 (年份)；剧集：标题 (年份)，内部再建 Season）
+        3. 把同一部剧/电影的散落文件都重命名为 MP 标准名并移动进去
+        4. 可选直接移动到目标入库目录
+        """
+        from app.chain.media import MediaChain
+
+        try:
+            client = P115Client(self._normalize_cookie(self._p115_cookie))
+            storage_chain = None
+            try:
+                from app.chain.storage import StorageChain
+                from app.schemas import FileItem
+
+                storage_chain = StorageChain()
+            except Exception as e:
+                logger.warning(f"StorageChain 不可用，仅使用 p115client: {e}")
+
+            # 1. 找到所有同目录散落文件
+            listing = self.list_offline_entries()
+            files = [
+                item for item in (listing.get("data") or [])
+                if item.get("type") == "file"
+            ]
+            if not files:
+                return {"success": False, "message": "离线目录中没有散落文件"}
+
+            # 2. 按第一个文件识别媒体
+            media_chain = MediaChain()
+            probe_name = file_name or files[0].get("name") or ""
+            context = media_chain.recognize_by_path(Path(f"/{probe_name}"), obtain_images=False)
+            if not (context and context.media_info):
+                # 逐个文件尝试识别
+                for item in files:
+                    ctx = media_chain.recognize_by_path(Path(f"/{item.get('name')}"), obtain_images=False)
+                    if ctx and ctx.media_info:
+                        context = ctx
+                        break
+            if not (context and context.media_info):
+                return {
+                    "success": False,
+                    "message": f"媒体识别失败: {probe_name}，请确认文件名或先重命名",
+                }
+
+            mediainfo = context.media_info
+            meta = context.meta_info
+            media_type_val = getattr(mediainfo, 'type', None)
+            if isinstance(media_type_val, MMediaType):
+                media_type = media_type_val.to_agent()
+            else:
+                if hasattr(media_type_val, 'value'):
+                    media_type_val = media_type_val.value
+                media_type = "tv" if str(media_type_val).lower() in ("tv", "show", "电视剧") else "movie"
+            title = getattr(mediainfo, 'title', None) or (meta and getattr(meta, 'title', None))
+            year = getattr(mediainfo, 'year', None) or (meta and getattr(meta, 'year', None))
+            tmdb_id = getattr(mediainfo, 'tmdb_id', None)
+
+            if tmdb_id:
+                year_str = f" ({year})" if year else ""
+                new_folder_name = f"{title}{year_str} [tmdbid={tmdb_id}]"
+            elif year and title:
+                new_folder_name = f"{title} ({year})"
+            elif title:
+                new_folder_name = str(title)
+            else:
+                new_folder_name = file_name
+
+            logger.info(f"散落文件整理: 识别为 {media_type} {title} ({year}) tmdb={tmdb_id}, 目标目录名: {new_folder_name}")
+
+            # 3. 在离线目录创建标准目录
+            create_result = self._api_create_folder({
+                "cid": self._save_dir_id,
+                "name": new_folder_name,
+                "path": self._resolved_path,
+            })
+            folder_cid = (create_result.get("data") or {}).get("cid") or ""
+            if not folder_cid:
+                # 目录可能已存在，从列表里找
+                try:
+                    result = client.fs_files({"cid": self._save_dir_id, "limit": 1000, "offset": 0})
+                    for item in (result.get("data") or []):
+                        if str(item.get("n") or "") == new_folder_name:
+                            folder_cid = str(item.get("cid") or "")
+                            break
+                except Exception as e:
+                    logger.warning(f"查找已存在目录失败: {e}")
+            if not folder_cid:
+                return {"success": False, "message": f"创建/查找目录失败: {new_folder_name}"}
+
+            # 4. 剧集建 Season 子目录
+            season_dir_cid = ""
+            if media_type == "tv":
+                create_season = self._api_create_folder({
+                    "cid": folder_cid,
+                    "name": "Season 1",
+                    "path": self._join_u115_path(self._resolved_path, new_folder_name),
+                })
+                season_dir_cid = (create_season.get("data") or {}).get("cid") or ""
+
+            # 5. 用 TransferChain 生成每个文件的标准名（照搬 MP 命名方案）
+            from app.chain.transfer import TransferChain
+            transfer_chain = TransferChain()
+
+            moved = 0
+            failed = 0
+            file_status = []
+            dest_cid = season_dir_cid or folder_cid
+            dest_path = self._join_u115_path(
+                self._resolved_path,
+                new_folder_name + ("/Season 1" if media_type == "tv" else ""),
+            )
+            target_cid_for_files = season_dir_cid or folder_cid
+
+            for item in files:
+                name = item.get("name") or ""
+                item_cid = item.get("cid") or ""
+                if not item_cid:
+                    continue
+                try:
+                    ctx = media_chain.recognize_by_path(Path(f"/{name}"), obtain_images=False)
+                    if not (ctx and ctx.media_info):
+                        # 只整理与识别结果同属一部媒体的文件，识别不出的保留原样
+                        file_status.append({"name": name, "status": "跳过（识别失败）"})
+                        continue
+                    ctx_media_type = getattr(ctx.media_info, 'type', None)
+                    if isinstance(ctx_media_type, MMediaType):
+                        ctx_type = ctx_media_type.to_agent()
+                    else:
+                        ctx_type = str(getattr(ctx_media_type, 'value', ctx_media_type) or "").lower()
+                        ctx_type = "tv" if ctx_type in ("tv", "show", "电视剧") else "movie"
+                    if ctx_type != media_type:
+                        file_status.append({"name": name, "status": "跳过（其他媒体）"})
+                        continue
+                    if tmdb_id and getattr(ctx.media_info, 'tmdb_id', None) not in (None, tmdb_id):
+                        file_status.append({"name": name, "status": "跳过（其他媒体）"})
+                        continue
+
+                    recommend_path = transfer_chain.recommend_name(meta=ctx.meta_info, mediainfo=ctx.media_info)
+                    new_name = Path(recommend_path).name if recommend_path else ""
+                    if not new_name:
+                        file_status.append({"name": name, "status": "跳过（未生成新名称）"})
+                        continue
+
+                    move_result = self._api_move_file({
+                        "cid": item_cid,
+                        "target_cid": target_cid_for_files,
+                        "path": self._join_u115_path(self._resolved_path, name),
+                        "name": name,
+                        "target_path": dest_path,
+                        "type": "file",
+                    })
+                    if not move_result.get("success"):
+                        failed += 1
+                        file_status.append({"name": name, "status": f"移动失败: {move_result.get('message')}"})
+                        continue
+                    if new_name != name:
+                        rename_result = self._api_rename({
+                            "cid": item_cid,
+                            "name": new_name,
+                            "path": self._join_u115_path(dest_path, name),
+                            "old_name": name,
+                            "type": "file",
+                        })
+                        if rename_result.get("success"):
+                            file_status.append({"name": name, "status": f"已整理: {new_name}"})
+                        else:
+                            file_status.append({"name": name, "status": f"已移动但重命名失败: {rename_result.get('message')}"})
+                    else:
+                        file_status.append({"name": name, "status": "已移动（名称不变）"})
+                    moved += 1
+                except Exception as e:
+                    failed += 1
+                    file_status.append({"name": name, "status": f"异常: {e}"})
+                    logger.warning(f"散落文件整理异常: {name}, {e}")
+
+            final_path = dest_path
+            message = (
+                f"散落文件整理完成: {moved} 个 -> {new_folder_name}"
+                + ("/Season 1" if media_type == "tv" and season_dir_cid else "")
+            )
+            if failed:
+                message += f"，失败 {failed} 个"
+
+            payload: Dict[str, Any] = {
+                "success": True,
+                "message": message,
+                "folder_cid": folder_cid,
+                "new_folder_name": new_folder_name,
+                "final_path": final_path,
+                "media_type": media_type,
+                "title": title,
+                "year": year,
+                "tmdb_id": tmdb_id,
+                "moved": moved,
+                "failed": failed,
+                "files": file_status,
+                "needs_agent_files": [],
+            }
+
+            # 6. 记录待整理任务，便于智能体后续确认/清理
+            self._record_pending_task(new_folder_name, final_path, {
+                "rename_result": message,
+                "media_type": media_type,
+                "title": title,
+                "year": year,
+                "tmdb_id": tmdb_id,
+                "folder_cid": folder_cid,
+                "loose_files": True,
+            })
+
+            # 7. 可选直接移动入库
+            if target_path:
+                payload["move"] = self.move_folder(folder_cid, target_path, task_name=new_folder_name)
+                if payload["move"].get("success"):
+                    payload["message"] = f"整理并移动完成: {new_folder_name} -> {target_path}"
+            return payload
+        except Exception as e:
+            logger.error(f"散落文件整理异常: {e}")
+            return {"success": False, "message": f"散落文件整理异常: {e}"}
 
     def move_folder(self, cid: str, target_path: str, task_name: str = "") -> Dict[str, Any]:
         """把 115 文件夹移动到目标目录。"""
