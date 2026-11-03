@@ -433,13 +433,23 @@ class OfflineOrganizer:
                         file_status.append({"name": name, "status": f"移动失败: {move_result.get('message')}"})
                         continue
                     if new_name != name:
-                        rename_result = self._api_rename({
-                            "cid": item_cid,
-                            "name": new_name,
-                            "path": self._join_u115_path(dest_path, name),
-                            "old_name": name,
-                            "type": "file",
-                        })
+                        # 移动后文件已在新目录，用新路径重命名（StorageChain 按 path 定位）
+                        renamed_item = FileItem(
+                            storage="u115",
+                            fileid=item_cid,
+                            type="file",
+                            name=name,
+                            path=self._join_u115_path(dest_path, name),
+                        )
+                        rename_result = {"success": False, "message": "未执行"}
+                        try:
+                            rn = storage_chain.rename_file(renamed_item, new_name)
+                            if rn:
+                                rename_result = {"success": True, "message": "重命名成功"}
+                            else:
+                                rename_result = {"success": False, "message": f"rename_file 返回 {rn!r}"}
+                        except Exception as rn_err:
+                            rename_result = {"success": False, "message": str(rn_err)}
                         if rename_result.get("success"):
                             file_status.append({"name": name, "status": f"已整理: {new_name}"})
                         else:
