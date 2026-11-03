@@ -497,15 +497,86 @@ class OfflineOrganizer:
                 "loose_files": True,
             })
 
-            # 7. 可选直接移动入库
-            if target_path:
-                payload["move"] = self.move_folder(folder_cid, target_path, task_name=new_folder_name)
+            # 7. 移动入库：优先用传入的 target_path，否则按 MP 目录映射自动匹配
+            move_target = target_path
+            matched_dir = None
+            if not move_target:
+                matched = self.match_target_directory(
+                    media_type=media_type,
+                    category=str(getattr(mediainfo, 'category', '') or ''),
+                )
+                if matched.get("success"):
+                    move_target = matched.get("path")
+                    matched_dir = matched
+                else:
+                    payload["move"] = {"success": False, "message": matched.get("message", "未匹配到目标目录")}
+            if move_target:
+                payload["move"] = self.move_folder(folder_cid, move_target, task_name=new_folder_name)
                 if payload["move"].get("success"):
-                    payload["message"] = f"整理并移动完成: {new_folder_name} -> {target_path}"
+                    payload["message"] = f"整理并移动完成: {new_folder_name} -> {move_target}"
+                    if matched_dir:
+                        payload["matched_directory"] = matched_dir
+                else:
+                    payload["move"]["target_path"] = move_target
             return payload
         except Exception as e:
             logger.error(f"散落文件整理异常: {e}")
             return {"success": False, "message": f"散落文件整理异常: {e}"}
+
+    def match_target_directory(self, media_type: str = "", category: str = "") -> Dict[str, Any]:
+        """按 MP 已配置的目录映射匹配目标入库目录。
+
+        匹配规则与 MP 一致：先按 media_category（如 日韩剧/欧美剧/国产剧）
+        精确匹配；没有配置分类的目录则按 media_type（电影/电视剧）兜底。
+        返回 {"success": True, "path": ..., "name": ...} 或 {"success": False}
+        """
+        try:
+            from app.helper.directory import DirectoryHelper
+
+            dirs = DirectoryHelper().get_library_dirs() or []
+            media_type_norm = str(media_type or "").strip()
+            # 统一媒体类型表述（movie->电影, tv->电视剧）
+            if media_type_norm.lower() in ("movie", "film"):
+                media_type_norm = "电影"
+            elif media_type_norm.lower() in ("tv", "show", "series"):
+                media_type_norm = "电视剧"
+            category_norm = str(category or "").strip()
+
+            type_matched = []
+            for d in dirs:
+                try:
+                    dir_type = str(getattr(d, "media_type", "") or "").strip()
+                    dir_category = str(getattr(d, "media_category", "") or "").strip()
+                    dir_path = str(getattr(d, "library_path", "") or getattr(d, "path", "") or "").strip()
+                    dir_storage = str(getattr(d, "library_storage", "") or getattr(d, "storage", "") or "").strip()
+                    if not dir_path:
+                        continue
+                    # 目录的 storage 必须是 u115（我们只能在 115 内移动）
+                    if dir_storage and dir_storage.lower() != "u115":
+                        continue
+                    if media_type_norm and dir_type and dir_type != media_type_norm:
+                        continue
+                    type_matched.append((d, dir_type, dir_category, dir_path))
+                except Exception:
+                    continue
+
+            # 1. 分类精确匹配
+            if category_norm:
+                for d, dir_type, dir_category, dir_path in type_matched:
+                    if dir_category and dir_category == category_norm:
+                        return {"success": True, "path": dir_path, "name": getattr(d, "name", "") or dir_category, "matched_by": "category"}
+            # 2. 无分类目录兜底
+            for d, dir_type, dir_category, dir_path in type_matched:
+                if not dir_category:
+                    return {"success": True, "path": dir_path, "name": getattr(d, "name", "") or dir_type, "matched_by": "type"}
+            # 3. 类型匹配到的第一个目录
+            if type_matched:
+                d, dir_type, dir_category, dir_path = type_matched[0]
+                return {"success": True, "path": dir_path, "name": getattr(d, "name", "") or dir_type, "matched_by": "first"}
+            return {"success": False, "message": f"MP目录映射中未找到媒体类型为 {media_type_norm or '未知'} 的115目录"}
+        except Exception as e:
+            logger.warning(f"匹配MP目标目录失败: {e}")
+            return {"success": False, "message": f"匹配MP目标目录失败: {e}"}
 
     def move_folder(self, cid: str, target_path: str, task_name: str = "") -> Dict[str, Any]:
         """把 115 文件夹移动到目标目录。"""
@@ -1740,21 +1811,44 @@ class OfflineOrganizer:
                 self._update_offline_task_status(info_hash, "重命名失败", folder_cid=folder_cid, path=source_path, error=rename_result.get("message"))
                 return {"success": False, "message": f"重命名失败: {rename_result.get('message', '未知错误')}"}
 
-            # Step 4: record pending task; agent decides target directory from MP mapping config
+            # Step 4: record pending task
             final_path = self._join_u115_path(self._resolved_path, new_folder_name)
+
+            # Step 4.5: 按 MP 目录映射自动匹配目标入库目录并直接移动
+            # 匹配规则与MP一致：媒体分类（如 日韩剧/欧美剧/国产剧）优先，其次类型
+            category = str(getattr(mediainfo, 'category', '') or '')
+            matched_dir = self.match_target_directory(media_type=media_type, category=category)
+            move_result = None
+            if matched_dir.get("success"):
+                target_path = matched_dir.get("path") or ""
+                move_result = self.move_folder(folder_cid, target_path, task_name=task_name)
+                if move_result.get("success"):
+                    final_path = self._join_u115_path(target_path, new_folder_name)
+                    logger.info(f"已按MP目录映射移动: {new_folder_name} -> {target_path} (匹配方式: {matched_dir.get('matched_by')})")
+                else:
+                    logger.warning(f"按MP目录映射移动失败: {move_result.get('message')}，交给智能体处理")
+            else:
+                logger.warning(f"未匹配到MP目标目录: {matched_dir.get('message')}，交给智能体处理")
+
             self._record_pending_task(task_name, final_path, {
                 "rename_result": rename_result.get("message"),
                 "media_type": media_type,
+                "media_category": category,
                 "title": title,
                 "year": year,
                 "tmdb_id": tmdb_id,
                 "folder_cid": folder_cid,
-                "needs_agent_target_match": True,
+                "needs_agent_target_match": not (move_result and move_result.get("success")),
                 "needs_agent_files": needs_agent_files,
             })
-            self._update_offline_task_status(info_hash, "重命名完成，待智能体移动", folder_cid=folder_cid, path=final_path)
+            self._update_offline_task_status(
+                info_hash,
+                "整理完成" if (move_result and move_result.get("success")) else "重命名完成，待智能体移动",
+                folder_cid=folder_cid,
+                path=final_path,
+            )
 
-            # Step 5: 主动调用智能体处理移动
+            # Step 5: 主动调用智能体处理移动（仅在未成功自动移动时）
             _title_for_notify = re.sub(r"^\[[^\]]*\]\s*", "", task_name)
             _match = re.match(r"^([^\.\[]+)", _title_for_notify)
             _clean_name = _match.group(1).strip() if _match else _title_for_notify.strip()
@@ -1775,33 +1869,49 @@ class OfflineOrganizer:
                 )
 
             # 构造发给智能体的消息
-            agent_message = (
-                f"115离线下载已完成并重命名，请将文件夹移动到入库目录：\n"
-                f"标题: {title}\n"
-                f"年份: {year}\n"
-                f"TMDB ID: {tmdb_id}\n"
-                f"媒体类型: {media_type}\n"
-                f"文件夹名: {new_folder_name}\n"
-                f"文件路径: {final_path}\n"
-                f"CID: {folder_cid}\n"
-                f"存储: u115\n"
-                f"\n请执行以下操作：\n"
-                f"1. 根据媒体类型({media_type})和MP目录映射配置，确定目标入库目录的115网盘完整路径\n"
-                f"   - 电影(movie)通常移动到电影库目录，如 /媒体库/电影\n"
-                f"   - 电视剧(tv)通常移动到电视剧库目录，如 /媒体库/电视剧\n"
-                f"   - 请查询MP的目录映射配置确认实际路径\n"
-                f"2. 调用 cl_search_move_file 工具执行移动，参数：\n"
-                f"   - source_cid: {folder_cid}（源文件夹CID）\n"
-                f"   - target_path: 目标目录的115网盘完整路径\n"
-                f"   - task_name: {task_name}\n"
-                f"{agent_file_text}"
-                f"\n注意：文件移动由插件直接执行，无需智能体拥有文件操作权限。"
-                f"插件会自动根据目标路径查找CID并完成移动，移动成功后自动清除待整理任务记录。"
-                f"\n如果因目录映射配置查询失败或目标路径不存在导致无法移动，请将具体失败原因直接回复给当前消息渠道通知用户。"
-            )
+            if move_result and move_result.get("success"):
+                # 已按映射自动入库，仅在有待确认文件时请智能体复核
+                agent_message = (
+                    f"115离线下载已完成并自动入库：\n"
+                    f"标题: {title} ({year})\n"
+                    f"TMDB ID: {tmdb_id}\n"
+                    f"媒体类型: {media_type} | 分类: {category}\n"
+                    f"已移动到: {final_path}\n"
+                    f"CID: {folder_cid}\n"
+                    f"匹配目录: {matched_dir.get('name')} ({matched_dir.get('matched_by')})\n"
+                    f"{agent_file_text}"
+                    f"\n如无需补充处理，请调用 cl_search_complete_task 清理任务记录（task_name: {task_name}）。"
+                )
+            else:
+                agent_message = (
+                    f"115离线下载已完成并重命名，请将文件夹移动到入库目录：\n"
+                    f"标题: {title}\n"
+                    f"年份: {year}\n"
+                    f"TMDB ID: {tmdb_id}\n"
+                    f"媒体类型: {media_type} | 分类: {category}\n"
+                    f"文件夹名: {new_folder_name}\n"
+                    f"文件路径: {final_path}\n"
+                    f"CID: {folder_cid}\n"
+                    f"存储: u115\n"
+                )
+                if not matched_dir.get("success"):
+                    agent_message += f"\n自动匹配目标目录失败: {matched_dir.get('message')}\n"
+                agent_message += (
+                    f"\n请执行以下操作：\n"
+                    f"1. 根据媒体类型({media_type})、分类({category})和MP目录映射配置，确定目标入库目录的115网盘完整路径"
+                    f"（如日韩剧应移动到分类为日韩剧的目录）\n"
+                    f"2. 调用 cl_search_move_file 工具执行移动，参数：\n"
+                    f"   - source_cid: {folder_cid}（源文件夹CID）\n"
+                    f"   - target_path: 目标目录的115网盘完整路径\n"
+                    f"   - task_name: {task_name}\n"
+                    f"{agent_file_text}"
+                    f"\n注意：文件移动由插件直接执行，无需智能体拥有文件操作权限。"
+                    f"插件会自动根据目标路径查找CID并完成移动，移动成功后自动清除待整理任务记录。"
+                    f"\n如果因目录映射配置查询失败或目标路径不存在导致无法移动，请将具体失败原因直接回复给当前消息渠道通知用户。"
+                )
 
-            # 主动发送消息给智能体（手动整理时由工具直接返回结果，不再反向通知）
-            if notify:
+            # 主动发送消息给智能体（手动整理时由工具直接返回结果，不再反向通知；已自动入库且无待确认文件时不打扰）
+            if notify and not (move_result and move_result.get("success")):
                 self._notify_agent(
                     agent_message,
                     channel=self._convert_channel(_session.get("channel")),
@@ -1818,13 +1928,19 @@ class OfflineOrganizer:
                 notify_content += f"文件路径: `{final_path}`\n"
                 notify_content += f"CID: `{folder_cid}`\n"
                 if media_type:
-                    notify_content += f"媒体类型: {media_type}\n"
+                    notify_content += f"媒体类型: {media_type}"
+                    if category:
+                        notify_content += f" | 分类: {category}"
+                    notify_content += "\n"
+                if move_result and move_result.get("success"):
+                    notify_content += f"已按MP目录映射移动到: `{matched_dir.get('path')}`\n"
                 if needs_agent_files:
                     notify_content += f"有 {len(needs_agent_files)} 个文件未自动删除，已交给智能体确认\n"
-                notify_content += "已通知智能体处理移动"
+                if not (move_result and move_result.get("success")):
+                    notify_content += "已通知智能体处理移动"
 
                 self.post_message(
-                    title=f"{_clean_name} 重命名完成，待移动",
+                    title=f"{_clean_name} {'整理完成' if (move_result and move_result.get('success')) else '重命名完成，待移动'}",
                     text=notify_content,
                     mtype=NotificationType.Plugin,
                     channel=self._convert_channel(_session.get("channel")),
@@ -1835,11 +1951,15 @@ class OfflineOrganizer:
             # 返回需要智能体处理的信息
             return {
                 "success": True,
-                "needs_agent": True,
+                "needs_agent": not (move_result and move_result.get("success")) or bool(needs_agent_files),
+                "moved": bool(move_result and move_result.get("success")),
+                "target_path": matched_dir.get("path") if matched_dir else None,
+                "matched_directory": matched_dir,
                 "folder_cid": folder_cid,
                 "new_folder_name": new_folder_name,
                 "final_path": final_path,
                 "media_type": media_type,
+                "media_category": category,
                 "title": title,
                 "year": year,
                 "tmdb_id": tmdb_id,
